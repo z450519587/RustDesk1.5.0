@@ -4066,20 +4066,9 @@ void earlyAssert() {
 }
 
 void checkUpdate() {
-  if (!isWeb) {
-    if (!bind.isCustomClient()) {
-      platformFFI.registerEventHandler(
-          kCheckSoftwareUpdateFinish, kCheckSoftwareUpdateFinish,
-          (Map<String, dynamic> evt) async {
-        if (evt['url'] is String) {
-          stateGlobal.updateUrl.value = evt['url'];
-        }
-      });
-      Timer(const Duration(seconds: 1), () async {
-        bind.mainGetSoftwareUpdateUrl();
-      });
-    }
-  }
+  // [CUSTOM] Software update checks disabled for this build.
+  // Intentionally does nothing so the app never queries for updates
+  // and never shows an update notification.
 }
 
 // https://github.com/flutter/flutter/issues/153560#issuecomment-2497160535

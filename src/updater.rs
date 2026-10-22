@@ -104,8 +104,7 @@ pub fn start_auto_update() {
 
 #[allow(dead_code)]
 pub fn manually_check_update() -> ResultType<()> {
-    let sender = TX_MSG.lock().unwrap();
-    sender.send(UpdateMsg::CheckUpdate)?;
+    // [CUSTOM] Manual update check disabled for this build.
     Ok(())
 }
 
@@ -147,8 +146,9 @@ fn has_no_controlling_conns() -> bool {
 }
 
 fn start_auto_update_check() -> Sender<UpdateMsg> {
-    let (tx, rx) = channel();
-    std::thread::spawn(move || start_auto_update_check_(rx));
+    // [CUSTOM] Auto update background checks are disabled for this build.
+    // Do not spawn the periodic check thread.
+    let (tx, _rx) = channel();
     return tx;
 }
 
