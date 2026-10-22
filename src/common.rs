@@ -1136,6 +1136,13 @@ pub fn get_app_name() -> String {
     hbb_common::config::APP_NAME.read().unwrap().clone()
 }
 
+/// 品牌显示名（"仁和堂专用远程工具"）。
+/// 仅用于用户可见的文案/标题/快捷方式等，不参与路径、服务名、IPC 等内部标识。
+#[inline]
+pub fn get_app_display_name() -> &'static str {
+    hbb_common::config::APP_BRAND_NAME
+}
+
 #[inline]
 pub fn is_rustdesk() -> bool {
     hbb_common::config::APP_NAME.read().unwrap().eq("RustDesk")

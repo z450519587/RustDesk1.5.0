@@ -1123,11 +1123,12 @@ pub fn main_get_socks() -> Vec<String> {
 }
 
 pub fn main_get_app_name() -> String {
-    get_app_name()
+    // 界面（窗口标题、关于页、品牌文案）统一使用客户化品牌名
+    crate::common::get_app_display_name().to_owned()
 }
 
 pub fn main_get_app_name_sync() -> SyncReturn<String> {
-    SyncReturn(get_app_name())
+    SyncReturn(crate::common::get_app_display_name().to_owned())
 }
 
 pub fn main_uri_prefix_sync() -> SyncReturn<String> {

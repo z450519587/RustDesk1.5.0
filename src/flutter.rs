@@ -226,7 +226,9 @@ pub unsafe extern "C" fn free_c_args(ptr: *mut *mut c_char, len: c_int) {
 #[cfg(windows)]
 #[no_mangle]
 pub unsafe extern "C" fn get_rustdesk_app_name(buffer: *mut u16, length: i32) -> i32 {
-    let name = crate::platform::wide_string(&crate::get_app_name());
+    // 原生窗口标题使用品牌名，需与 Flutter 侧 setTitle 保持一致，
+    // 否则 main.cpp 里的 FindWindowW 单实例检测会失效。
+    let name = crate::platform::wide_string(crate::get_app_display_name());
     if length > name.len() as i32 {
         std::ptr::copy_nonoverlapping(name.as_ptr(), buffer, name.len());
         return 0;

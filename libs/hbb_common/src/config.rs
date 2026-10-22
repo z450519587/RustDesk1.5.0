@@ -114,6 +114,13 @@ const CHARS: &[char] = &[
     'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
 
+/// 客户化品牌名：所有用户可见的位置（窗口标题、界面文案、托盘提示、
+/// 快捷方式名、卸载项、通知标题）统一使用该名称。
+///
+/// 注意：内部标识 `APP_NAME` 仍是 ASCII 的 "RustDesk"，用于安装目录、
+/// 可执行文件名、服务名、配置/日志目录与 IPC 命名，保证升级与既有部署不被破坏。
+pub const APP_BRAND_NAME: &str = "仁和堂专用远程工具";
+
 pub const RENDEZVOUS_SERVERS: &[&str] = &["rd.renhetang.cn"];
 pub const RS_PUB_KEY: &str = "VQMjLpbApV6OgRkm1Ur0r5kEb8UkBhDZTCOm1r9IPyI=";
 
