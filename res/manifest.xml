@@ -1,5 +1,16 @@
 <?xml version='1.0' encoding='UTF-8' standalone='yes'?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!--
+    权限策略：界面与托盘以普通用户权限运行（asInvoker），仅后台服务以最高权限运行。
+    需要管理员权限的动作由程序自身通过 ShellExecute "runas" 提权完成。
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
   <asmv3:application xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
     <asmv3:windowsSettings
          xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">

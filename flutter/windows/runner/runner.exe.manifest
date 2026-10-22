@@ -1,5 +1,20 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!--
+    权限策略：界面与托盘以普通用户权限运行（asInvoker）。
+    - 不弹 UAC，支持从资源管理器拖拽文件到远程窗口；
+    - 开机自启的托盘快捷方式因此可以静默启动，不会打断用户；
+    - 需要管理员权限的动作（安装、写 Program Files、创建服务等）由程序自身
+      通过 ShellExecute "runas" 拉起提权子进程完成；
+    - 后台服务由 Windows 服务管理器以 LocalSystem（最高权限）启动并开机自启。
+  -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
