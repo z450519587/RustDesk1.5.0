@@ -2147,7 +2147,22 @@ pub struct LocalConfig {
 
 impl LocalConfig {
     fn load() -> LocalConfig {
-        Config::load_::<LocalConfig>("_local")
+        let mut config = Config::load_::<LocalConfig>("_local");
+        // 定制：门店机器一律禁用更新检查，且不允许界面或配置文件改动。
+        // 键不存在或值不为 "N" 时都强制写回 "N"（覆盖老机器残留的 "Y"），
+        // 并在需要时落盘持久化；同时登记进覆盖表，使任何写入尝试失效。
+        let need_store = config.options.get("enable-check-update") != Some(&"N".to_string());
+        config
+            .options
+            .insert("enable-check-update".to_string(), "N".to_string());
+        OVERWRITE_LOCAL_SETTINGS
+            .write()
+            .unwrap()
+            .insert("enable-check-update".to_string(), "N".to_string());
+        if need_store {
+            config.store();
+        }
+        config
     }
 
     fn store(&self) {
