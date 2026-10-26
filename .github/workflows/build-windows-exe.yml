@@ -24,9 +24,40 @@ jobs:
   generate-bridge:
     uses: ./.github/workflows/bridge.yml
 
+  # 轻量 Dart 静态检查：几分钟内就能暴露 Flutter 编译错误，
+  # 避免白等一整个 Windows 编译（~50 分钟）才发现 Undefined name 之类的问题。
+  dart-check:
+    name: Dart Static Check
+    needs: [generate-bridge]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install flutter
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+
+      - name: Analyze flutter sources
+        working-directory: ./flutter
+        run: |
+          flutter pub get
+          flutter analyze --no-fatal-infos --no-fatal-warnings lib/store_sync_service.dart lib/consts.dart lib/desktop/pages/desktop_setting_page.dart
+
   build-windows-exe:
     name: Windows x64 EXE
-    needs: [generate-bridge]
+    needs: [generate-bridge, dart-check]
     runs-on: windows-2022
     steps:
       - name: Export GitHub Actions cache env

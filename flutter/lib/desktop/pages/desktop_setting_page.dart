@@ -3391,7 +3391,7 @@ class _StoreInfoState extends State<_StoreInfo> {
   void initState() {
     super.initState();
     try {
-      _nameCtrl.text = bind.mainGetLocalOption(key: kOptionStoreName) ?? '';
+      _nameCtrl.text = bind.mainGetLocalOption(key: kOptionStoreName);
     } catch (e) {
       // 首次启动该选项尚未写入时可能抛异常，忽略即可
       _nameCtrl.text = '';
