@@ -9,6 +9,7 @@ import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/audio_input.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/consts.dart';
+import 'package:flutter_hbb/store_sync_service.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
 import 'package:flutter_hbb/common/widgets/keyboard_shortcuts/page_body.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_keyboard_shortcuts_page.dart';
@@ -58,6 +59,7 @@ enum SettingsTabKey {
   display,
   account,
   printer,
+  store,
   about,
 }
 
@@ -80,6 +82,7 @@ class DesktopSettingPage extends StatefulWidget {
         !bind.isDisableSettings() &&
         bind.mainGetBuildinOption(key: kOptionHideRemotePrinterSetting) != 'Y')
       SettingsTabKey.printer,
+    SettingsTabKey.store,
     SettingsTabKey.about,
   ];
 
@@ -211,6 +214,10 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
           settingTabs
               .add(_TabInfo(tab, 'Printer', Icons.print_outlined, Icons.print));
           break;
+        case SettingsTabKey.store:
+          settingTabs
+              .add(_TabInfo(tab, '门店', Icons.store_outlined, Icons.store));
+          break;
         case SettingsTabKey.about:
           settingTabs
               .add(_TabInfo(tab, 'About', Icons.info_outline, Icons.info));
@@ -241,6 +248,9 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
           break;
         case SettingsTabKey.printer:
           children.add(const _Printer());
+          break;
+        case SettingsTabKey.store:
+          children.add(const _StoreInfo());
           break;
         case SettingsTabKey.about:
           children.add(const _About());
@@ -3360,3 +3370,129 @@ void changeSocks5Proxy() async {
 }
 
 //#endregion
+
+// ---------------------------------------------------------------------------
+// 门店名称：填写后同步到 lejianwen/rustdesk-api 的设备管理与共享通讯簿
+// ---------------------------------------------------------------------------
+
+class _StoreInfo extends StatefulWidget {
+  const _StoreInfo({Key? key}) : super(key: key);
+
+  @override
+  State<_StoreInfo> createState() => _StoreInfoState();
+}
+
+class _StoreInfoState extends State<_StoreInfo> {
+  final TextEditingController _nameCtrl = TextEditingController();
+  final RxString _status = ''.obs;
+  final RxBool _syncing = false.obs;
+
+  @override
+  void initState() {
+    super.initState();
+    try {
+      _nameCtrl.text = bind.mainGetLocalOption(key: kOptionStoreName) ?? '';
+    } catch (e) {
+      // 首次启动该选项尚未写入时可能抛异常，忽略即可
+      _nameCtrl.text = '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  void _saveLocal() async {
+    await bind.mainSetLocalOption(
+        key: kOptionStoreName, value: _nameCtrl.text.trim());
+    _status.value = '已保存到本机';
+  }
+
+  void _sync() async {
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
+      _status.value = '请先填写门店名称';
+      return;
+    }
+    _syncing.value = true;
+    _status.value = '同步中…';
+    final r = await StoreSyncService.syncStoreName(name);
+    _syncing.value = false;
+    final parts = <String>[];
+    if (r['peer'] == true) parts.add('设备管理 ✓');
+    if (r['addressBook'] == true) parts.add('通讯簿 ✓');
+    final err = '${r['error'] ?? ''}';
+    if (err.isNotEmpty) parts.add('错误: $err');
+    // 显示服务端读回的实际别名，便于一眼确认中文没乱码
+    final peerAlias = '${r['peerAlias'] ?? ''}';
+    if (peerAlias.isNotEmpty) parts.add('服务器实际值: $peerAlias');
+    _status.value = parts.join('   ');
+    if (r['success'] == true) {
+      await bind.mainSetLocalOption(key: kOptionStoreName, value: name);
+    }
+    if (mounted) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(r['success'] == true ? '同步成功' : '同步未完成'),
+          content: Text(_status.value),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(), child: const Text('确定'))
+          ],
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      children: [
+        _Card(
+          title: '门店名称',
+          children: [
+            const Text('填写本门店名称，点「同步到服务器」后会写入 API 服务器的'
+                '「设备管理」与「共享通讯簿」，远程技术员即可看到店名而非一串 ID。'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _nameCtrl,
+              decoration: const InputDecoration(
+                hintText: '例如：仁和堂XX店',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Obx(() => Text(_status.value,
+                style: const TextStyle(color: MyTheme.accent))),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                ElevatedButton(
+                    onPressed: _saveLocal, child: const Text('保存到本机')),
+                const SizedBox(width: 12),
+                Obx(() => ElevatedButton(
+                      onPressed: _syncing.value ? null : _sync,
+                      child: _syncing.value
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Text('同步到服务器'),
+                    )),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              '令牌配置见客户端 exe 同目录的 store_sync.json（adminToken 用 SQL 把'
+              ' user_tokens.expired_at 改成远未来得到，永久有效）。',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}

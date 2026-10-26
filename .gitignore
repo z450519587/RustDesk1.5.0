@@ -60,3 +60,6 @@ flutter/web/
 /third_party/libdrmtap/
 # Local git worktrees
 .worktrees/
+
+# 门店名同步配置（含永久 adminToken，禁止入库）
+deploy/store_sync.json

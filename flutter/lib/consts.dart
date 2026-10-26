@@ -92,6 +92,9 @@ const String kOptionD3DRender = "allow-d3d-render";
 const String kOptionOpenInTabs = "allow-open-in-tabs";
 const String kOptionOpenInWindows = "allow-open-in-windows";
 const String kOptionForceAlwaysRelay = "force-always-relay";
+
+// 门店名称：本机保存 + 同步到 lejianwen/rustdesk-api 的设备管理与共享通讯簿
+const String kOptionStoreName = "store-name";
 const String kOptionViewOnly = "view_only";
 const String kOptionEnableLanDiscovery = "enable-lan-discovery";
 const String kOptionWhitelist = "whitelist";
