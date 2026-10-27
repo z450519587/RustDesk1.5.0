@@ -3515,8 +3515,8 @@ class _StoreInfoState extends State<_StoreInfo> {
             ),
             const SizedBox(height: 16),
             const Text(
-              '令牌配置见客户端 exe 同目录的 store_sync.json（adminToken 用 SQL 把'
-              ' user_tokens.expired_at 改成远未来得到，永久有效）。',
+              'API 服务器与管理员令牌来自随安装包分发的出厂配置'
+              '（安装目录下的 store_config.json），门店无需也无法在此修改。',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
