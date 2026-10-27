@@ -188,17 +188,31 @@ jobs:
           set -e
           mkdir -p ./rustdesk
           if [ -n "$STORE_SYNC_CONFIG_B64" ]; then
-            echo "$STORE_SYNC_CONFIG_B64" | base64 -d > ./rustdesk/store_config.json
-            echo "store_config.json injected from secret"
+            # 用 python3 解码而不是 `base64 -d`：
+            # Git Bash 的 coreutils base64 只接受单行输入，遇到 Secret 里的
+            # 换行会报 "base64: invalid input" 并让整个步骤失败。
+            # python3 解码前先剥掉所有空白，对单行/多行都安全。
+            export STORE_SYNC_CONFIG_B64
+            python3 - <<'PY'
+          import base64, os, sys
+          b64 = ''.join(os.environ.get('STORE_SYNC_CONFIG_B64', '').split())
+          try:
+              raw = base64.b64decode(b64, validate=True)
+          except Exception as e:
+              print('::error::failed to decode STORE_SYNC_CONFIG_B64: %s' % e)
+              sys.exit(1)
+          with open('./rustdesk/store_config.json', 'wb') as f:
+              f.write(raw)
+          print('store_config.json injected from secret (%d bytes)' % len(raw))
+          PY
+            # 校验是合法 JSON 且含预期键，避免坏配置打进包
+            python3 -c "import json;d=json.load(open('./rustdesk/store_config.json'));print('keys:',sorted(d.keys()));print('has_token:',bool(d.get('adminToken')))"
           elif [ -f ./deploy/store_config.example.json ]; then
             cp ./deploy/store_config.example.json ./rustdesk/store_config.json
             echo "::warning::STORE_SYNC_CONFIG_B64 secret not set; using template without token"
+            python3 -c "import json;d=json.load(open('./rustdesk/store_config.json'));print('keys:',sorted(d.keys()));print('has_token:',bool(d.get('adminToken')))"
           else
             echo "::warning::no store_config.json available; client will prompt on first run"
-          fi
-          # 只打印键名，不打印值，避免令牌进构建日志
-          if [ -f ./rustdesk/store_config.json ]; then
-            python3 -c "import json;d=json.load(open('./rustdesk/store_config.json'));print('keys:',sorted(d.keys()));print('has_token:',bool(d.get('adminToken')))"
           fi
 
       - name: Build self-extracted executable
