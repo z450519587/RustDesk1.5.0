@@ -239,11 +239,24 @@ class StoreConfigService {
   }
 
   /// 保存门店名称到用户配置
+  ///
+  /// 同时清除用户配置里可能残留的 API/令牌字段：这两项统一以出厂配置
+  /// （随安装包分发，只读）为准，门店不应也不能覆盖。旧版本客户端曾把
+  /// 它们写进用户配置，不清理会覆盖掉新出厂配置。
   static Future<String?> saveStoreName(String name) async {
     final user = await loadUserConfig();
     user[kKeyStoreName] = name.trim();
     user[kKeyConfigured] = true;
+    _stripManagedKeys(user);
     return await saveUserConfig(user);
+  }
+
+  /// 移除用户配置中「由出厂配置管理、不允许用户覆盖」的字段。
+  static void _stripManagedKeys(Map<String, dynamic> user) {
+    user.remove(kKeyApiServer);
+    user.remove(kKeyAdminToken);
+    user.remove(kKeyAddressBookUserId);
+    user.remove(kKeyAddressBookCollectionId);
   }
 
   /// 是否已经配置过门店名（用于判断是否需要弹首次配置窗口）

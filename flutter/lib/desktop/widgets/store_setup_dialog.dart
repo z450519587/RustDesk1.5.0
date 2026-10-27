@@ -4,17 +4,16 @@ import 'package:flutter_hbb/store_sync_service.dart';
 
 /// 首次启动配置窗口
 ///
-/// 触发时机（任一满足即弹）：
-/// - 用户配置不存在（首次运行 / 配置被清掉）
-/// - 门店名称为空
-/// - 出厂配置缺失（安装包没带上 store_config.json）
+/// 触发时机：用户尚未配置过门店名（首次运行 / 用户配置丢失）时弹出。
 ///
-/// 弹窗内的字段：
-/// - 门店名称：必填，保存到用户配置目录
-/// - API 服务器：可选，出厂配置已有则默认带出
-/// - 管理员令牌：可选，出厂配置已有则默认带出并置灰（避免门店误改）
+/// 弹窗内**只有一个字段**：门店名称。
+/// - API 服务器与管理员令牌来自随安装包分发的出厂配置
+///   （`store_config.json`），不在此处暴露，避免门店误改导致同步失效。
+/// - 门店名称为**必填**：为空时「保存」按钮禁用，提交时也再做一次非空校验。
+/// - **不允许延后填写**：没有「稍后再说」按钮，弹窗也不可点击遮罩关闭
+///   （`barrierDismissible: false`），必须填写后才能继续。
 ///
-/// 保存失败（例如目录无写权限）时**不关闭弹窗**，直接给出明确提示，
+/// 保存失败（例如所有目录都无写权限）时**不关闭弹窗**，直接给出明确提示，
 /// 保证程序在异常环境下仍可继续使用。
 class StoreSetupDialog extends StatefulWidget {
   const StoreSetupDialog({Key? key}) : super(key: key);
@@ -37,49 +36,51 @@ class StoreSetupDialog extends StatefulWidget {
 
 class _StoreSetupDialogState extends State<StoreSetupDialog> {
   final TextEditingController _nameCtrl = TextEditingController();
-  final TextEditingController _apiCtrl = TextEditingController();
-  final TextEditingController _tokenCtrl = TextEditingController();
 
   bool _loading = true;
   bool _saving = false;
-  bool _tokenFromFactory = false;
   String _error = '';
   String _hint = '';
 
   @override
   void initState() {
     super.initState();
+    _nameCtrl.addListener(_onTextChanged);
     _load();
   }
 
   @override
   void dispose() {
+    _nameCtrl.removeListener(_onTextChanged);
     _nameCtrl.dispose();
-    _apiCtrl.dispose();
-    _tokenCtrl.dispose();
     super.dispose();
   }
 
+  /// 输入内容变化时刷新「保存」按钮的可用状态（空值不允许提交）。
+  void _onTextChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// 门店名称是否已填写（去掉首尾空白后非空）。
+  bool get _nameValid => _nameCtrl.text.trim().isNotEmpty;
+
   Future<void> _load() async {
-    final factory = await StoreConfigService.loadFactoryConfig();
-    final user = await StoreConfigService.loadUserConfig();
     final effective = await StoreConfigService.loadEffectiveConfig();
     final hasFactory = await StoreConfigService.hasFactoryConfig();
+    final hasToken = await StoreConfigService.hasAdminToken();
 
-    _nameCtrl.text = (user[StoreConfigService.kKeyStoreName] ??
-            effective[StoreConfigService.kKeyStoreName] ??
-            '')
-        .toString();
-    _apiCtrl.text = (effective[StoreConfigService.kKeyApiServer] ?? '').toString();
-    _tokenCtrl.text = (effective[StoreConfigService.kKeyAdminToken] ?? '').toString();
-    _tokenFromFactory =
-        (factory[StoreConfigService.kKeyAdminToken] ?? '').toString().trim().isNotEmpty;
+    _nameCtrl.text = (effective[StoreConfigService.kKeyStoreName] ?? '')
+        .toString()
+        .trim();
 
     if (!hasFactory) {
       _hint = '未检测到出厂配置（store_config.json），可能是安装包未完整分发。'
-          '请联系管理员补齐，或直接在下方填写。';
-    } else if (_tokenFromFactory) {
-      _hint = '已读取出厂配置，可直接填写门店名称。';
+          '门店名称仍可保存到本机，但无法同步到公司服务器，请联系管理员补齐。';
+    } else if (!hasToken) {
+      _hint = '已读取出厂配置，但其中不含管理员令牌，门店名称将仅保存在本机。';
+    } else {
+      _hint = '保存后将自动同步到公司服务器的「设备管理」与「共享通讯簿」，'
+          '远程技术员即可看到店名。';
     }
 
     if (mounted) setState(() => _loading = false);
@@ -87,6 +88,7 @@ class _StoreSetupDialogState extends State<StoreSetupDialog> {
 
   Future<void> _save() async {
     final name = _nameCtrl.text.trim();
+    // 提交时的非空校验（按钮禁用只是第一道防线，这里是第二道）
     if (name.isEmpty) {
       setState(() => _error = '请填写门店名称');
       return;
@@ -96,22 +98,10 @@ class _StoreSetupDialogState extends State<StoreSetupDialog> {
       _error = '';
     });
 
-    // 用户配置：门店名必存；API 地址与令牌只在用户主动改动时写入，
-    // 避免把出厂配置里的令牌覆盖成空。
-    final user = await StoreConfigService.loadUserConfig();
-    user[StoreConfigService.kKeyStoreName] = name;
-    user[StoreConfigService.kKeyConfigured] = true;
-
-    final api = _apiCtrl.text.trim();
-    if (api.isNotEmpty) {
-      user[StoreConfigService.kKeyApiServer] = api;
-    }
-    final token = _tokenCtrl.text.trim();
-    if (token.isNotEmpty) {
-      user[StoreConfigService.kKeyAdminToken] = token;
-    }
-
-    final err = await StoreConfigService.saveUserConfig(user);
+    // 只保存门店名。API 地址与令牌始终来自出厂配置，不写入用户配置，
+    // 避免门店误改导致同步失效。saveStoreName 内部会清除旧版本残留的
+    // API/令牌字段，统一以出厂配置为准。
+    final err = await StoreConfigService.saveStoreName(name);
     if (err != null) {
       // 写盘失败：留在弹窗里给出明确提示，不静默失败
       if (mounted) {
@@ -160,8 +150,7 @@ class _StoreSetupDialogState extends State<StoreSetupDialog> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      '请填写本门店名称。保存后将自动同步到公司服务器的'
-                      '「设备管理」与「共享通讯簿」，远程技术员即可看到店名。',
+                      '请填写本门店名称（必填）。',
                       style: TextStyle(fontSize: 13),
                     ),
                     const SizedBox(height: 16),
@@ -170,39 +159,13 @@ class _StoreSetupDialogState extends State<StoreSetupDialog> {
                     TextField(
                       controller: _nameCtrl,
                       autofocus: true,
+                      onSubmitted: (_) {
+                        if (_nameValid) _save();
+                      },
                       decoration: const InputDecoration(
                         hintText: '例如：仁和堂沂蒙路店',
                         border: OutlineInputBorder(),
                         isDense: true,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    _label('API 服务器'),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: _apiCtrl,
-                      decoration: const InputDecoration(
-                        hintText: 'http://192.168.100.190:21114',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    _label('管理员令牌'),
-                    const SizedBox(height: 6),
-                    TextField(
-                      controller: _tokenCtrl,
-                      obscureText: true,
-                      readOnly: _tokenFromFactory,
-                      decoration: InputDecoration(
-                        hintText: _tokenFromFactory
-                            ? '已由出厂配置提供'
-                            : '用于写入服务器别名，留空则不同步',
-                        border: const OutlineInputBorder(),
-                        isDense: true,
-                        helperText: _tokenFromFactory
-                            ? '令牌来自出厂配置，如需更换请联系管理员。'
-                            : null,
                       ),
                     ),
                     if (_hint.isNotEmpty) ...[
@@ -230,12 +193,9 @@ class _StoreSetupDialogState extends State<StoreSetupDialog> {
               ),
       ),
       actions: [
-        TextButton(
-          onPressed: _saving ? null : () => Navigator.of(context).pop(false),
-          child: const Text('稍后再说'),
-        ),
+        // 只保留「保存并同步」：门店名必填，不允许延后填写。
         ElevatedButton(
-          onPressed: _saving || _loading ? null : _save,
+          onPressed: (_saving || _loading || !_nameValid) ? null : _save,
           child: _saving
               ? const SizedBox(
                   width: 16,
