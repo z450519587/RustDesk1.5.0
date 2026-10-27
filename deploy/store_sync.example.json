@@ -1,6 +1,6 @@
 {
   "_comment": "复制本文件为 store_sync.json 放到 RustDesk 客户端 exe 同目录。不要提交真实令牌到 Git。",
-  "apiServer": "在此填入 API 服务器地址，如 http://192.168.100.190:21114",
+  "apiServer": "在此填入 API 服务器地址，如 http://rd.renhetang.cn:21114",
   "adminToken": "在此填入用 deploy/store_sync_token.sql 改成永久的令牌",
   "addressBookUserId": 0,
   "addressBookCollectionId": 0

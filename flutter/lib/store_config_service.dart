@@ -46,8 +46,11 @@ class StoreConfigService {
   static const String kKeyConfigured = 'configured';
 
   /// 内置默认配置（编译进程序，作为最后兜底）
+  ///
+  /// API 服务器用**公网域名**而不是内网 IP：门店机可能不在公司内网
+  /// （员工回家、笔记本带出等），写死内网地址会导致门店名同步不到服务器。
   static const Map<String, dynamic> kDefaults = <String, dynamic>{
-    kKeyApiServer: 'http://192.168.100.190:21114',
+    kKeyApiServer: 'http://rd.renhetang.cn:21114',
     kKeyAdminToken: '',
     kKeyAddressBookUserId: 1,
     kKeyAddressBookCollectionId: 1,
