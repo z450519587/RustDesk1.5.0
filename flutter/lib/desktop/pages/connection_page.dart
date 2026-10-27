@@ -266,9 +266,13 @@ class _ConnectionPageState extends State<ConnectionPage>
           children: [
             Row(
               children: [
-                Flexible(child: _buildRemoteIDTextField(context)),
-                // 右侧空白区域展示门店信息，不占用原有内容的位置
-                const StoreInfoBadge(),
+                // 远程 ID 输入框本身宽度固定（360），flex: 0 表示不参与分配
+                Flexible(
+                    flex: 0, child: _buildRemoteIDTextField(context)),
+                // 右侧空白区域展示门店信息，不占用原有内容的位置。
+                // fit: loose —— 徽标按内容自适应宽度（不会被拉伸占满整行），
+                // 窗口较窄时可被压缩，避免与远程 ID 输入框一起撑爆 Row。
+                const Flexible(fit: FlexFit.loose, child: StoreInfoBadge()),
               ],
             ).marginOnly(top: 22),
             SizedBox(height: 12),

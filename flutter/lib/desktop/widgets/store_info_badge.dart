@@ -65,7 +65,9 @@ class _StoreInfoBadgeState extends State<StoreInfoBadge> {
     return Container(
       margin: const EdgeInsets.only(left: 16),
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-      constraints: const BoxConstraints(minWidth: 190, maxWidth: 320),
+      // 最小宽度取得比视觉需求小一些：窗口较窄时（远程 ID 输入框占 360px），
+      // 徽标可被压缩到下限以内，避免 Row 溢出报错。
+      constraints: const BoxConstraints(minWidth: 120, maxWidth: 320),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: const BorderRadius.all(Radius.circular(13)),
