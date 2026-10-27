@@ -5,29 +5,29 @@
 
 .DESCRIPTION
     背景：
-    早期测试时有人在客户端「设置 → 网络 → ID 服务器」里填了**内网 IP**
-    （如 192.168.100.190），该值被写进本机配置 `RustDesk2.toml` 的
-    `custom-rendezvous-server` / `relay-server` 选项。
+    早期测试时有人在客户端「设置 → 网络 → ID 服务器」填了**内网 IP**
+    （如 192.168.100.190），该值被写进本机配置 `%APPDATA%\RustDesk\config\RustDesk2.toml`。
 
-    运行时服务器地址的优先级是：
-        EXE_RENDEZVOUS_SERVER (编译期注入)
-          -> custom-rendezvous-server 选项   ← 被污染的就是这一项
-          -> PROD_RENDEZVOUS_SERVER
-          -> RENDEZVOUS_SERVERS 常量 = ['rd.renhetang.cn']
+    RustDesk 运行时取 ID 服务器的优先级是：
+        1. EXE_RENDEZVOUS_SERVER   (编译期注入，本定制版为空)
+        2. 选项 custom-rendezvous-server
+        3. PROD_RENDEZVOUS_SERVER  (本定制版为空)
+        4. **字段 rendezvous_server**   ← 客户端连上哪个就缓存哪个
+        5. 常量 RENDEZVOUS_SERVERS = ['rd.renhetang.cn']
 
-    所以只要本机配置里存着内网 IP，客户端就会一直连内网，
-    **在公司外网就连不上了**（日志表现：
-      `rendezvous server: 192.168.100.190:21116`
-      `Failed to secure tcp: deadline has elapsed`）。
+    只要第 2 或第 4 项里存着内网 IP，客户端就会一直连内网，
+    **在公司外网就连不上了**。日志表现：
+        INFO  [src\client.rs:842] rendezvous server: 192.168.100.190:21116
+        ERROR [src\client.rs:4954] Failed to secure tcp: deadline has elapsed
 
-    本脚本把这两个选项清空，客户端即回落到编译期常量
-    `rd.renhetang.cn`，并保留 API 服务器设置不动。
-
-    注意：只改 ID 服务器与中继服务器，**不动** API 服务器
+    本脚本把第 2、4 项以及中继服务器 `relay-server` 全部纠正为
+    rd.renhetang.cn，并**保留 API 服务器设置不动**
     （API 服务器是门店名同步用的，与远程连接无关）。
 
+    修改前自动备份原文件。
+
 .PARAMETER IdServer
-    期望的 ID 服务器地址，默认 rd.renhetang.cn（留空则回落到客户端内置常量）
+    期望的 ID 服务器地址，默认 rd.renhetang.cn
 
 .PARAMETER RelayServer
     期望的中继服务器地址，默认与 IdServer 相同
@@ -66,6 +66,13 @@ if (-not $ConfigPath) {
 }
 if (-not $RelayServer) { $RelayServer = $IdServer }
 
+# 内网地址特征：私有网段。用于识别"被污染"的配置
+function Test-PrivateHost([string]$v) {
+    if ([string]::IsNullOrWhiteSpace($v)) { return $false }
+    $h = ($v -split ':')[0]
+    return ($h -match '^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)')
+}
+
 Write-Host ""
 Write-Host "=== 门店客户端服务器配置修复 ===" -ForegroundColor White
 Write-Info "配置文件：$ConfigPath"
@@ -73,40 +80,50 @@ Write-Host ""
 
 if (-not (Test-Path $ConfigPath)) {
     Write-Warn "配置文件不存在，说明该机器可能还没运行过客户端。"
-    Write-Info "首次运行时会自动使用内置默认值 rd.renhetang.cn，无需修复。"
+    Write-Info "首次运行会自动使用内置默认值 rd.renhetang.cn，无需修复。"
     exit 0
 }
 
-# --- 读取现状 ---
 $content = Get-Content $ConfigPath -Raw -Encoding UTF8
 
-function Get-Option([string]$text, [string]$key) {
+function Get-Opt([string]$text, [string]$key) {
     $m = [regex]::Match($text, "(?m)^\s*$([regex]::Escape($key))\s*=\s*'([^']*)'")
     if ($m.Success) { return $m.Groups[1].Value }
     return $null
 }
 
-$curId    = Get-Option $content 'custom-rendezvous-server'
-$curRelay = Get-Option $content 'relay-server'
-$curApi   = Get-Option $content 'api-server'
+function Show-Or($v) { if ($null -eq $v) { '<未设置>' } else { $v } }
+
+# 三个可能被污染的位置
+$curIdOpt = Get-Opt $content 'custom-rendezvous-server'  # 选项（优先级2）
+$curIdFld = Get-Opt $content 'rendezvous_server'         # 字段缓存（优先级4）
+$curRelay = Get-Opt $content 'relay-server'               # 中继服务器
+$curApi   = Get-Opt $content 'api-server'                 # API 服务器（不动）
 
 Write-Host "当前配置：" -ForegroundColor White
-Write-Host ("  ID 服务器   (custom-rendezvous-server) : " + $(if ($null -eq $curId) { "<未设置>" } else { $curId }))
-Write-Host ("  中继服务器 (relay-server)              : " + $(if ($null -eq $curRelay) { "<未设置>" } else { $curRelay }))
-Write-Host ("  API 服务器 (api-server)                : " + $(if ($null -eq $curApi) { "<未设置>" } else { $curApi }))
+Write-Host ("  (1) ID 服务器选项 (custom-rendezvous-server) : " + (Show-Or $curIdOpt))
+Write-Host ("  (2) ID 服务器缓存 (rendezvous_server)         : " + (Show-Or $curIdFld))
+Write-Host ("  (3) 中继服务器     (relay-server)              : " + (Show-Or $curRelay))
+Write-Host ("  (4) API 服务器     (api-server)                : " + (Show-Or $curApi) + "   <- 本脚本不修改")
 Write-Host ""
 
-$needFix = $false
-if ($null -ne $curId    -and $curId    -ne $IdServer)    { $needFix = $true }
-if ($null -ne $curRelay -and $curRelay -ne $RelayServer) { $needFix = $true }
+# --- 判定哪些需要改 ---
+$fixIdOpt = ($null -ne $curIdOpt) -and ($curIdOpt -ne $IdServer)
+$fixIdFld = ($null -ne $curIdFld) -and ($curIdFld -ne $IdServer) -and ($curIdFld -ne ($IdServer + ':21116'))
+$fixRelay = ($null -ne $curRelay) -and ($curRelay -ne $RelayServer)
 
-if (-not $needFix) {
+# 即使值看着"对"，只要指向内网也要改（内网优先被读取）
+if ($null -ne $curIdOpt -and (Test-PrivateHost $curIdOpt) -and $curIdOpt -ne $IdServer) { $fixIdOpt = $true }
+if ($null -ne $curIdFld -and (Test-PrivateHost $curIdFld)) { $fixIdFld = $true }
+if ($null -ne $curRelay -and (Test-PrivateHost $curRelay) -and $curRelay -ne $RelayServer) { $fixRelay = $true }
+
+if (-not ($fixIdOpt -or $fixIdFld -or $fixRelay)) {
     Write-Ok "ID 服务器与中继服务器配置正确，无需修改。"
     if ($null -ne $curApi) { Write-Info "API 服务器：$curApi （不受本脚本影响）" }
     exit 0
 }
 
-Write-Warn "检测到服务器配置被指向了非预期地址，这会导致在公司外网无法远程连接。"
+Write-Warn "检测到服务器配置异常，这会导致在公司外网无法远程连接。"
 if ($CheckOnly) {
     Write-Info "CheckOnly 模式，未做修改。去掉 -CheckOnly 即可执行修复。"
     exit 0
@@ -119,31 +136,42 @@ Write-Ok "已备份原配置：$backup"
 
 # --- 修改 ---
 $new = $content
-if ($null -ne $curId -and $curId -ne $IdServer) {
-    $new = $new -replace "(?m)^(\s*)custom-rendezvous-server\s*=\s*'[^']*'", "`$1custom-rendezvous-server = '$IdServer'"
-    Write-Ok "ID 服务器已改为：$IdServer"
+if ($fixIdOpt) {
+    if ($null -eq $curIdOpt) {
+        # 选项不存在：在 [options] 段里插入
+        if ($new -match '(?m)^\[options\]\s*$') {
+            $new = [regex]::Replace($new, '(?m)^\[options\]\s*$',
+                "[options]`r`ncustom-rendezvous-server = '$IdServer'")
+        }
+    } else {
+        $new = [regex]::Replace($new, "(?m)^(\s*)custom-rendezvous-server\s*=\s*'[^']*'",
+            "`$1custom-rendezvous-server = '$IdServer'")
+    }
+    Write-Ok "(1) ID 服务器选项 -> $IdServer"
 }
-if ($null -ne $curRelay -and $curRelay -ne $RelayServer) {
-    $new = $new -replace "(?m)^(\s*)relay-server\s*=\s*'[^']*'", "`$1relay-server = '$RelayServer'"
-    Write-Ok "中继服务器已改为：$RelayServer"
+if ($fixIdFld) {
+    # 字段缓存：置空即可，客户端下次连上会自动回写正确的值
+    $new = [regex]::Replace($new, "(?m)^(\s*)rendezvous_server\s*=\s*'[^']*'",
+        "`$1rendezvous_server = ''")
+    Write-Ok "(2) ID 服务器缓存字段已清空（客户端会自动回写正确值）"
+}
+if ($fixRelay) {
+    $new = [regex]::Replace($new, "(?m)^(\s*)relay-server\s*=\s*'[^']*'",
+        "`$1relay-server = '$RelayServer'")
+    Write-Ok "(3) 中继服务器 -> $RelayServer"
 }
 
-# 保持原有的换行风格，避免 CRLF/LF 混用
-$enc = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText($ConfigPath, $new, $enc)
+[System.IO.File]::WriteAllText($ConfigPath, $new, (New-Object System.Text.UTF8Encoding($false)))
 Write-Ok "配置已写回"
 
 # --- 校验 ---
 Write-Host ""
 Write-Info "复核修改结果："
 $check = Get-Content $ConfigPath -Raw -Encoding UTF8
-$nowId    = Get-Option $check 'custom-rendezvous-server'
-$nowRelay = Get-Option $check 'relay-server'
-$nowApi   = Get-Option $check 'api-server'
-Write-Host ("  ID 服务器   : " + $nowId)
-Write-Host ("  中继服务器 : " + $nowRelay)
-Write-Host ("  API 服务器 : " + $(if ($null -eq $nowApi) { "<未设置>" } else { $nowApi }))
-
+Write-Host ("  (1) ID 服务器选项 : " + (Show-Or (Get-Opt $check 'custom-rendezvous-server')))
+Write-Host ("  (2) ID 服务器缓存 : " + (Show-Or (Get-Opt $check 'rendezvous_server')))
+Write-Host ("  (3) 中继服务器     : " + (Show-Or (Get-Opt $check 'relay-server')))
+Write-Host ("  (4) API 服务器     : " + (Show-Or (Get-Opt $check 'api-server')))
 Write-Host ""
-Write-Ok "修复完成。请**完全退出客户端后重新启动**（托盘图标右键 → 退出），配置才会生效。"
+Write-Ok "修复完成。请**完全退出客户端后重新启动**（托盘图标右键 -> 退出），配置才会生效。"
 Write-Info "门店名称等本地配置（%APPDATA%\RustDesk\config\store_user_config.json）未受影响。"
