@@ -13,7 +13,7 @@ import 'package:flutter/foundation.dart';
 /// | 层 | 文件 | 位置 | 写入者 | 生命周期 |
 /// |---|---|---|---|---|
 /// | 出厂配置 | `store_config.json` | 安装目录（exe 同级） | 安装包 | 随安装包分发，只读 |
-/// | 用户配置 | `store_user_config.json` | `%APPDATA%\RustDesk\` | 客户端 | 用户填写，持久保存 |
+/// | 用户配置 | `store_user_config.json` | `%APPDATA%\RustDesk\config\` | 客户端 | 用户填写，持久保存 |
 ///
 /// 出厂配置随安装包分发到安装目录，用户无需手工拷贝；
 /// 用户配置写在用户目录，**安装目录没有写权限时程序依然能正常保存**。
@@ -72,11 +72,12 @@ class StoreConfigService {
     }
   }
 
-  /// 用户配置目录 —— 与 RustDesk 自身的配置目录保持一致（%APPDATA%\RustDesk）
+  /// 用户配置目录 —— 与 RustDesk 自身的配置文件同级
   ///
-  /// Rust 侧 `Config::path()` 在 Windows 上通过 directories_next 落到
-  /// `%APPDATA%\RustDesk`（内部标识 APP_NAME 恒为 ASCII 的 "RustDesk"，
-  /// 品牌显示名不参与路径）。这里按同样的规则推导，保证读写的是同一份文件。
+  /// Rust 侧 `Config::path()` 在 Windows 上经 directories_next 落到
+  /// `%APPDATA%\RustDesk\config\`（内部标识 APP_NAME 恒为 ASCII 的 "RustDesk"，
+  /// 品牌显示名不参与路径），`RustDesk2.toml` 等配置文件都在这一层。
+  /// 这里按同样的规则推导，保证与 RustDesk 配置同处一地、卸载时一并清理。
   ///
   /// 该目录属于当前登录用户，**永远可写** —— 这正是安装目录无写权限时
   /// 用户配置依然能保存下来的原因。
@@ -88,7 +89,7 @@ class StoreConfigService {
     }
     final appData = Platform.environment['APPDATA'];
     if (appData != null && appData.isNotEmpty) {
-      _userConfigDir = '$appData\\RustDesk';
+      _userConfigDir = '$appData\\RustDesk\\config';
       return _userConfigDir!;
     }
     // 非 Windows 或环境异常时的兜底：退到 exe 目录
@@ -119,11 +120,11 @@ class StoreConfigService {
     final candidates = <String>[];
     final appData = Platform.environment['APPDATA'];
     if (appData != null && appData.isNotEmpty) {
-      candidates.add('$appData\\RustDesk\\$kUserFileName');
+      candidates.add('$appData\\RustDesk\\config\\$kUserFileName');
     }
     final localAppData = Platform.environment['LOCALAPPDATA'];
     if (localAppData != null && localAppData.isNotEmpty) {
-      candidates.add('$localAppData\\RustDesk\\$kUserFileName');
+      candidates.add('$localAppData\\RustDesk\\config\\$kUserFileName');
     }
     final dir0 = exeDir;
     if (dir0.isNotEmpty) {
@@ -187,8 +188,8 @@ class StoreConfigService {
   /// 保存用户配置。
   ///
   /// 按优先级尝试多个**用户可写**的位置，全部失败才返回错误信息：
-  /// 1. %APPDATA%\RustDesk\          —— 与 RustDesk 自身配置同目录（首选）
-  /// 2. %LOCALAPPDATA%\RustDesk\     —— %APPDATA% 不可用时的退路
+  /// 1. %APPDATA%\RustDesk\config\   —— 与 RustDesk 自身配置同级（首选）
+  /// 2. %LOCALAPPDATA%\RustDesk\config\ —— %APPDATA% 不可用时的退路
   /// 3. exe 同目录                   —— 仅当该目录可写时（例如便携模式）
   ///
   /// **绝不写安装目录**（Program Files）：那里普通用户无写权限，
@@ -199,11 +200,11 @@ class StoreConfigService {
     final dirs = <String>[];
     final appData = Platform.environment['APPDATA'];
     if (appData != null && appData.isNotEmpty) {
-      dirs.add('$appData\\RustDesk');
+      dirs.add('$appData\\RustDesk\\config');
     }
     final localAppData = Platform.environment['LOCALAPPDATA'];
     if (localAppData != null && localAppData.isNotEmpty) {
-      dirs.add('$localAppData\\RustDesk');
+      dirs.add('$localAppData\\RustDesk\\config');
     }
     final dir0 = exeDir;
     if (dir0.isNotEmpty) {
@@ -246,11 +247,22 @@ class StoreConfigService {
   }
 
   /// 是否已经配置过门店名（用于判断是否需要弹首次配置窗口）
+  ///
+  /// 判定依据：
+  /// - 用户配置里 `configured == true`，或用户配置里已有门店名 —— 用户填过，不再打扰
+  /// - 出厂配置里带了门店名 —— 安装包已预置，同样视为已配置
+  ///
+  /// 注意：**不能**把「出厂配置文件不存在」当作需要弹窗的理由，
+  /// 否则安装包分发不完整时会每次启动都弹窗，无法正常使用。
   static Future<bool> isConfigured() async {
     final user = await loadUserConfig();
     if (user[kKeyConfigured] == true) return true;
     final name = (user[kKeyStoreName] ?? '').toString().trim();
-    return name.isNotEmpty;
+    if (name.isNotEmpty) return true;
+    // 出厂配置预置了门店名也算已配置
+    final factory = await loadFactoryConfig();
+    final factoryName = (factory[kKeyStoreName] ?? '').toString().trim();
+    return factoryName.isNotEmpty;
   }
 
   /// 出厂配置是否可用（是否随包分发到位）
