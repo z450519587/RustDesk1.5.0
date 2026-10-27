@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common/widgets/connection_page_title.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/widgets/popup_menu.dart';
+import 'package:flutter_hbb/desktop/widgets/store_info_badge.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:get/get.dart';
 import 'package:window_manager/window_manager.dart';
@@ -266,6 +267,8 @@ class _ConnectionPageState extends State<ConnectionPage>
             Row(
               children: [
                 Flexible(child: _buildRemoteIDTextField(context)),
+                // 右侧空白区域展示门店信息，不占用原有内容的位置
+                const StoreInfoBadge(),
               ],
             ).marginOnly(top: 22),
             SizedBox(height: 12),

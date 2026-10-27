@@ -63,3 +63,6 @@ flutter/web/
 
 # 门店名同步配置（含永久 adminToken，禁止入库）
 deploy/store_sync.json
+
+# 出厂配置（含 adminToken 密钥，由 GitHub Secret 注入构建，禁止入库）
+deploy/store_config.json

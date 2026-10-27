@@ -12,10 +12,12 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/connection_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
+import 'package:flutter_hbb/desktop/widgets/store_setup_dialog.dart';
 import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
+import 'package:flutter_hbb/store_config_service.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:flutter_hbb/utils/platform_channel.dart';
 import 'package:get/get.dart';
@@ -696,11 +698,34 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
+  /// 首次启动时检查门店配置。
+  ///
+  /// 触发条件：**尚未配置过**（首次运行 / 用户配置文件丢失 / 未填门店名）。
+  /// 已配置过的机器不再打扰；出厂配置缺失时由主界面徽标提示，不反复弹窗。
+  ///
+  /// 弹窗放在首帧之后，避免在 build 过程中调用 showDialog。
+  Future<void> _checkStoreConfigFirstRun() async {
+    // 让首帧先渲染出来，窗口显示后再弹窗
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        final configured = await StoreConfigService.isConfigured();
+        if (configured) {
+          return;
+        }
+        if (!mounted) return;
+        await StoreSetupDialog.show(context);
+      } catch (e) {
+        // 配置检查失败绝不能影响程序启动
+        debugPrint('[store_config] 首次配置检查失败: $e');
+      }
+    });
+  }
+
   @override
   void initState() {
     super.initState();
-    _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {
-      await gFFI.serverModel.fetchID();
+    _checkStoreConfigFirstRun();
+    _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {      await gFFI.serverModel.fetchID();
       final error = await bind.mainGetError();
       if (systemError != error) {
         systemError = error;

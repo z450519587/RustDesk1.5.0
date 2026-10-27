@@ -9,6 +9,7 @@ import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/audio_input.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/consts.dart';
+import 'package:flutter_hbb/store_config_service.dart';
 import 'package:flutter_hbb/store_sync_service.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
 import 'package:flutter_hbb/common/widgets/keyboard_shortcuts/page_body.dart';
@@ -3390,11 +3391,20 @@ class _StoreInfoState extends State<_StoreInfo> {
   @override
   void initState() {
     super.initState();
+    _load();
+  }
+
+  /// 从分层配置读取门店名称（用户配置优先，回落到出厂配置）
+  Future<void> _load() async {
     try {
-      _nameCtrl.text = bind.mainGetLocalOption(key: kOptionStoreName);
+      final name = await StoreConfigService.loadStoreName();
+      final hasToken = await StoreConfigService.hasAdminToken();
+      _nameCtrl.text = name;
+      _status.value = name.isEmpty
+          ? '尚未填写门店名称'
+          : (hasToken ? '当前门店：$name' : '当前门店：$name（未检测到出厂配置，仅本地保存）');
     } catch (e) {
-      // 首次启动该选项尚未写入时可能抛异常，忽略即可
-      _nameCtrl.text = '';
+      _status.value = '读取配置失败：$e';
     }
   }
 
@@ -3405,8 +3415,22 @@ class _StoreInfoState extends State<_StoreInfo> {
   }
 
   void _saveLocal() async {
-    await bind.mainSetLocalOption(
-        key: kOptionStoreName, value: _nameCtrl.text.trim());
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
+      _status.value = '请先填写门店名称';
+      return;
+    }
+    final err = await StoreConfigService.saveStoreName(name);
+    if (err != null) {
+      _status.value = '$err（配置目录：${await StoreConfigService.userConfigPath()}）';
+      return;
+    }
+    // 同时写入本地选项，便于其它界面读取
+    try {
+      await bind.mainSetLocalOption(key: kOptionStoreName, value: name);
+    } catch (e) {
+      debugPrint('[store_config] 写入本地选项失败: $e');
+    }
     _status.value = '已保存到本机';
   }
 
@@ -3430,7 +3454,12 @@ class _StoreInfoState extends State<_StoreInfo> {
     if (peerAlias.isNotEmpty) parts.add('服务器实际值: $peerAlias');
     _status.value = parts.join('   ');
     if (r['success'] == true) {
-      await bind.mainSetLocalOption(key: kOptionStoreName, value: name);
+      await StoreConfigService.saveStoreName(name);
+      try {
+        await bind.mainSetLocalOption(key: kOptionStoreName, value: name);
+      } catch (e) {
+        debugPrint('[store_config] 写入本地选项失败: $e');
+      }
     }
     if (mounted) {
       showDialog(

@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
+import 'package:flutter_hbb/store_config_service.dart';
 
 /// 门店名称同步服务
 ///
@@ -11,25 +12,17 @@ import 'package:flutter_hbb/models/platform_model.dart';
 ///   1) 设备管理（peer）别名  ->  POST /api/admin/peer/update
 ///   2) 共享通讯簿（address_book）别名 -> POST /api/admin/address_book/{create|update}
 ///
-/// 鉴权使用「永久令牌」方案：在 exe 同目录放一份 store_sync.json，
-/// 内含 adminToken（用 SQL 把 user_tokens.expired_at 改成远未来得到）、
-/// apiServer、addressBookUserId、addressBookCollectionId。
-/// 令牌不写死进源码，便于轮换。
+/// 鉴权使用「永久令牌」方案：令牌随安装包分发到安装目录的出厂配置
+/// （store_config.json），读取与轮换都无需重新编译客户端。
+/// 详见 StoreConfigService 的分层配置说明。
 class StoreSyncService {
-  static const String _configFileName = 'store_sync.json';
-
-  /// 从 exe 同目录读取同步配置。
+  /// 从分层配置读取同步所需字段。
+  ///
+  /// 出厂配置（随包分发，含 adminToken）的定位由 StoreConfigService 负责，
+  /// 这里只负责取值，不关心文件在哪、也不关心用户配置是否覆盖。
   static Future<Map<String, dynamic>> _loadConfig() async {
     try {
-      final dir = File(Platform.resolvedExecutable).parent.path;
-      final file = File('$dir/$_configFileName');
-      if (await file.exists()) {
-        // 显式按 UTF-8 读，避免 Windows 上按 GBK 解析导致中文配置乱码
-        final bytes = await file.readAsBytes();
-        final text = utf8.decode(bytes, allowMalformed: false);
-        final decoded = jsonDecode(text);
-        if (decoded is Map) return Map<String, dynamic>.from(decoded);
-      }
+      return await StoreConfigService.loadEffectiveConfig();
     } catch (e) {
       debugPrint('[store_sync] 读取配置失败: $e');
     }
@@ -82,21 +75,23 @@ class StoreSyncService {
     };
     try {
       final cfg = await _loadConfig();
-      final adminToken = (cfg['adminToken'] ?? '').toString().trim();
-      final abUserId = _toInt(cfg['addressBookUserId']);
-      final abCollectionId = _toInt(cfg['addressBookCollectionId']);
+      final adminToken =
+          (cfg[StoreConfigService.kKeyAdminToken] ?? '').toString().trim();
+      final abUserId = _toInt(cfg[StoreConfigService.kKeyAddressBookUserId]);
+      final abCollectionId =
+          _toInt(cfg[StoreConfigService.kKeyAddressBookCollectionId]);
       if (adminToken.isEmpty) {
-        result['error'] = '未配置 adminToken（请在 exe 同目录的 store_sync.json 中填写）';
+        result['error'] = '未配置 adminToken（出厂配置未随安装包分发，请联系管理员）';
         return result;
       }
 
-      // API 基址优先级：store_sync.json > 客户端 "api-server" 选项
-      var base = _normalizeBase((cfg['apiServer'] ?? '').toString());
+      // API 基址优先级：出厂/用户配置 > 客户端 "api-server" 选项
+      var base = _normalizeBase((cfg[StoreConfigService.kKeyApiServer] ?? '').toString());
       if (base.isEmpty) {
         base = _normalizeBase(await bind.mainGetApiServer());
       }
       if (base.isEmpty) {
-        result['error'] = '未配置 API 服务器地址（请在 store_sync.json 或客户端设置中填写）';
+        result['error'] = '未配置 API 服务器地址（请在配置窗口或客户端设置中填写）';
         return result;
       }
 

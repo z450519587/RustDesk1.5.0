@@ -1,0 +1,6 @@
+{
+  "apiServer": "http://192.168.100.190:21114",
+  "adminToken": "",
+  "addressBookUserId": 1,
+  "addressBookCollectionId": 1
+}
