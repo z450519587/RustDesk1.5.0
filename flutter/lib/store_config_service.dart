@@ -181,12 +181,40 @@ class StoreConfigService {
   }
 
   /// 读取合并后的生效配置：用户配置覆盖出厂配置
+  ///
+  /// 例外：**API 服务器 / 管理员令牌 / 通讯簿 ID 这三项永远以出厂配置为准**，
+  /// 用户配置里的同名键会被忽略。
+  ///
+  /// 原因：旧版本客户端曾把这三项写进用户配置，而且写的是**内网地址**
+  /// （如 192.168.100.190）。门店机若升级到新版，用户配置里的旧值会
+  /// 覆盖随安装包分发的新出厂配置，导致门店名同步不到服务器。
+  /// 而这类机器因为已配置过门店名，不会再弹首启窗口，光靠「保存时清理」
+  /// 永远也清理不到 —— 必须在**读取时**就挡住。
   static Future<Map<String, dynamic>> loadEffectiveConfig() async {
-    final merged = await loadFactoryConfig();
+    final factory = await loadFactoryConfig();
+    final merged = Map<String, dynamic>.from(factory);
     final user = await loadUserConfig();
     merged.addAll(user);
+    // 把「出厂配置管理」的字段还原成出厂配置的值
+    for (final k in _managedKeys) {
+      if (merged.containsKey(k)) {
+        if (factory.containsKey(k)) {
+          merged[k] = factory[k];
+        } else {
+          merged.remove(k);
+        }
+      }
+    }
     return merged;
   }
+
+  /// 由出厂配置管理、不允许用户配置覆盖的字段
+  static const List<String> _managedKeys = <String>[
+    kKeyApiServer,
+    kKeyAdminToken,
+    kKeyAddressBookUserId,
+    kKeyAddressBookCollectionId,
+  ];
 
   /// 保存用户配置。
   ///
@@ -256,10 +284,9 @@ class StoreConfigService {
 
   /// 移除用户配置中「由出厂配置管理、不允许用户覆盖」的字段。
   static void _stripManagedKeys(Map<String, dynamic> user) {
-    user.remove(kKeyApiServer);
-    user.remove(kKeyAdminToken);
-    user.remove(kKeyAddressBookUserId);
-    user.remove(kKeyAddressBookCollectionId);
+    for (final k in _managedKeys) {
+      user.remove(k);
+    }
   }
 
   /// 是否已经配置过门店名（用于判断是否需要弹首次配置窗口）
