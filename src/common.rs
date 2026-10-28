@@ -62,13 +62,13 @@ pub const TIMER_OUT: Duration = Duration::from_secs(1);
 pub(crate) const API_LOG_INTERVAL: Duration = Duration::from_secs(600);
 pub const DEFAULT_KEEP_ALIVE: i32 = 60_000;
 
-/// How long to wait for the rendezvous server to start the key exchange.
+/// How long to wait for the rendezvous server to start the key exchange, in milliseconds.
 ///
 /// A server that does the exchange sends it as soon as the connection is up, so this only
 /// has to cover that round trip. It is short because a server that does not do the exchange
 /// never sends anything, and every connection would otherwise wait out the full read
 /// timeout before falling back.
-const KEY_EXCHANGE_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const KEY_EXCHANGE_PROBE_TIMEOUT_MS: u64 = 3_000;
 
 const MIN_VER_MULTI_UI_SESSION: &str = "1.2.4";
 
@@ -2249,7 +2249,7 @@ async fn key_exchange(conn: &mut Stream, key: &str, log_on_success: bool) -> Res
     //
     // A server that does the exchange answers as soon as the connection is up, so the first
     // probe only waits briefly; a server already known not to do it is not waited for at all.
-    let server = conn.1.to_string();
+    let server = Config::get_rendezvous_server();
     if SERVERS_WITHOUT_KEY_EXCHANGE
         .lock()
         .unwrap()
@@ -2261,7 +2261,7 @@ async fn key_exchange(conn: &mut Stream, key: &str, log_on_success: bool) -> Res
         );
         return Ok(false);
     }
-    let first = match timeout(KEY_EXCHANGE_PROBE_TIMEOUT, conn.next()).await {
+    let first = match timeout(KEY_EXCHANGE_PROBE_TIMEOUT_MS, conn.next()).await {
         Ok(v) => v,
         Err(_) => {
             SERVERS_WITHOUT_KEY_EXCHANGE
