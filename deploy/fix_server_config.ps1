@@ -76,6 +76,49 @@ function Test-PrivateHost([string]$v) {
     return ($h -match '^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)')
 }
 
+function Repair-UserConfig([string]$cfgPath) {
+    $userConfig = Join-Path (Split-Path $cfgPath -Parent) 'store_user_config.json'
+    if (-not (Test-Path $userConfig)) {
+        Write-Info "未找到用户配置文件，跳过。"
+        return
+    }
+    Write-Host ""
+    Write-Info "检查用户配置：$userConfig"
+    try {
+        $uj = Get-Content $userConfig -Raw -Encoding UTF8 | ConvertFrom-Json
+        $dirty = @()
+        foreach ($k in @('apiServer','adminToken','addressBookUserId','addressBookCollectionId')) {
+            if ($uj.PSObject.Properties.Name -contains $k) {
+                $v = "$($uj.$k)"
+                # 注意：apiServer 是完整 URL（http://192.168.x.x:21114），
+                # 不能用 ^192.168 开头匹配，要从 host 部分判断。
+                $hostPart = ($v -replace '^[a-zA-Z][a-zA-Z0-9+.-]*://', '') -split '/' | Select-Object -First 1
+                $hostPart = ($hostPart -split ':')[0]
+                $isPrivate = ($hostPart -match '^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)')
+                if ($k -eq 'apiServer' -and $isPrivate) { $dirty += $k }
+            }
+        }
+        if ($dirty.Count -gt 0) {
+            if ($CheckOnly) {
+                Write-Warn "用户配置里存在内网地址：$($dirty -join ', ')（CheckOnly 模式未修改）"
+            } else {
+                Copy-Item $userConfig "$userConfig.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')" -Force
+                foreach ($k in $dirty) {
+                    $uj.PSObject.Properties.Remove($k)
+                }
+                [System.IO.File]::WriteAllText($userConfig,
+                    ($uj | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+                Write-Ok "已清除用户配置里的内网地址：$($dirty -join ', ')"
+                Write-Info "  门店名已保留：$($uj.storeName)"
+            }
+        } else {
+            Write-Ok "用户配置干净，无需清理。"
+        }
+    } catch {
+        Write-Warn "检查用户配置时出错（不影响本次修复）：$($_.Exception.Message)"
+    }
+}
+
 Write-Host ""
 Write-Host "=== 门店客户端服务器配置修复 ===" -ForegroundColor White
 Write-Info "配置文件：$ConfigPath"
@@ -123,6 +166,8 @@ if ($null -ne $curRelay -and (Test-PrivateHost $curRelay) -and $curRelay -ne $Re
 if (-not ($fixIdOpt -or $fixIdFld -or $fixRelay)) {
     Write-Ok "ID 服务器与中继服务器配置正确，无需修改。"
     if ($null -ne $curApi) { Write-Info "API 服务器：$curApi （不受本脚本影响）" }
+    # 用户配置里可能仍有旧版写入的内网 apiServer，仍需检查
+    Repair-UserConfig $ConfigPath
     exit 0
 }
 
@@ -177,7 +222,6 @@ Write-Host ("  (3) 中继服务器     : " + (Show-Or (Get-Opt $check 'relay-ser
 Write-Host ("  (4) API 服务器     : " + (Show-Or (Get-Opt $check 'api-server')))
 Write-Host ""
 Write-Ok "修复完成。请**完全退出客户端后重新启动**（托盘图标右键 -> 退出），配置才会生效。"
-Write-Info "门店名称等本地配置（%APPDATA%\RustDesk\config\store_user_config.json）未受影响。"
 
 # ---------------------------------------------------------------------------
 # 顺带清理用户配置里被旧版本写入的内网 API 地址
@@ -185,43 +229,6 @@ Write-Info "门店名称等本地配置（%APPDATA%\RustDesk\config\store_user_c
 # 旧版本客户端会把 apiServer 写进 store_user_config.json，而且写的是内网地址。
 # 它会**覆盖**随安装包分发的出厂配置，导致门店名同步不到服务器。
 # 这里把用户配置里这些「出厂配置管理」的字段删掉，门店名保留。
-$userConfig = Join-Path (Split-Path $ConfigPath -Parent) 'store_user_config.json'
-if (Test-Path $userConfig) {
-    Write-Host ""
-    Write-Info "检查用户配置：$userConfig"
-    try {
-        $uj = Get-Content $userConfig -Raw -Encoding UTF8 | ConvertFrom-Json
-        $dirty = @()
-        foreach ($k in @('apiServer','adminToken','addressBookUserId','addressBookCollectionId')) {
-            if ($uj.PSObject.Properties.Name -contains $k) {
-                $v = "$($uj.$k)"
-                # 注意：apiServer 是完整 URL（http://192.168.x.x:21114），
-                # 不能用 ^192.168 开头匹配，要从 host 部分判断。
-                $hostPart = ($v -replace '^[a-zA-Z][a-zA-Z0-9+.-]*://', '') -split '/' | Select-Object -First 1
-                $hostPart = ($hostPart -split ':')[0]
-                $isPrivate = ($hostPart -match '^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)')
-                if ($k -eq 'apiServer' -and $isPrivate) { $dirty += $k }
-            }
-        }
-        if ($dirty.Count -gt 0) {
-            if ($CheckOnly) {
-                Write-Warn "用户配置里存在内网地址：$($dirty -join ', ')（CheckOnly 模式未修改）"
-            } else {
-                Copy-Item $userConfig "$userConfig.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')" -Force
-                foreach ($k in $dirty) {
-                    $uj.PSObject.Properties.Remove($k)
-                }
-                [System.IO.File]::WriteAllText($userConfig,
-                    ($uj | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
-                Write-Ok "已清除用户配置里的内网地址：$($dirty -join ', ')"
-                Write-Info "  门店名已保留：$($uj.storeName)"
-            }
-        } else {
-            Write-Ok "用户配置干净，无需清理。"
-        }
-    } catch {
-        Write-Warn "检查用户配置时出错（不影响本次修复）：$($_.Exception.Message)"
-    }
-} else {
-    Write-Info "未找到用户配置文件，跳过。"
-}
+
+# 调用（无论 ID/中继配置是否需要修，用户配置都要检查）
+Repair-UserConfig $ConfigPath
