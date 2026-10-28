@@ -55,7 +55,7 @@ use hbb_common::{
     rand,
     rendezvous_proto::*,
     sha2::{Digest, Sha256},
-    socket_client::{connect_tcp, connect_tcp_local, ipv4_to_ipv6, new_direct_udp_for_unverified},
+    socket_client::{connect_tcp, connect_tcp_local, new_direct_udp_for_unverified},
     sodiumoxide::{base64, crypto::sign},
     timeout,
     tokio::{
@@ -365,6 +365,33 @@ fn tcp_punch_allowed() -> bool {
             || crate::get_webrtc_enabled())
 }
 
+/// Whether a relay address can be dialled at all: a name or an address that a socket can
+/// be opened to.
+///
+/// An address that names no host is refused rather than handed to the resolver. That covers
+/// the placeholder a server started with an unsubstituted address hands out — `{SERVER_IP}`
+/// is not a host, and resolving it fails only after the lookup has already cost the
+/// attempt its timeout. An empty address is refused for the same reason.
+fn is_usable_relay_address(addr: &str) -> bool {
+    let addr = addr.trim();
+    if addr.is_empty() {
+        return false;
+    }
+    // Strip the port, then the brackets an IPv6 literal carries, so what is left is the
+    // host part on its own.
+    let host = match addr.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() => {
+            host.trim_start_matches('[').trim_end_matches(']')
+        }
+        _ => addr,
+    };
+    if host.is_empty() {
+        return false;
+    }
+    // A placeholder is not a host name: it holds characters no host name may hold.
+    !host.contains(['{', '}'])
+}
+
 impl Client {
     const CLIENT_CLIPBOARD_NAME: &'static str = "client-clipboard";
 
@@ -648,6 +675,25 @@ impl Client {
         }
     }
 
+    /// The relay address to use when the direct path does not land, chosen without asking
+    /// the server: the locally configured one, else the id server's own address with the
+    /// relay port.
+    ///
+    /// The id server answers on `rendezvous_server`, so that host with the relay port is
+    /// reachable exactly when the id server is — which is the point: a machine on the same
+    /// intranet reaches the server by its intranet address, and a relay named for the public
+    /// address is not reachable from there even though the id server is.
+    fn local_relay_server(rendezvous_server: &str) -> String {
+        let configured = Config::get_option(config::keys::OPTION_RELAY_SERVER);
+        if is_usable_relay_address(&configured) {
+            return configured;
+        }
+        if rendezvous_server.is_empty() {
+            return String::new();
+        }
+        crate::increase_port(rendezvous_server, 1)
+    }
+
     /// UDP-NAT-test wait when the TCP clock is implausible (see TCP_RTT_PLAUSIBLE_MIN). The
     /// normal bound is `rtt / 2`: the test has been running since before the TCP connect, so on
     /// a network where TCP RTT ~ UDP RTT its response has already landed. A transparent TCP
@@ -843,7 +889,14 @@ impl Client {
         let mut socket = socket?;
         let mut my_addr = socket.local_addr();
         let mut signed_id_pk = Vec::new();
-        let mut relay_server = "".to_owned();
+        // The relay address the controller will use if the direct path does not land. The
+        // server names one in its punch reply, but that name is only usable when it is
+        // reachable from here: a server that advertises its public address, or that was
+        // started with an unexpanded address, names a host this machine cannot open. Start
+        // from the local configuration instead, and fall back to the server's own address
+        // with the relay port, which is the same host the id server answered on and so is
+        // reachable whenever the id server is.
+        let mut relay_server = Self::local_relay_server(&rendezvous_server);
         let mut peer_addr = Config::get_any_listen_addr(true);
         let mut peer_nat_type = NatType::UNKNOWN_NAT;
         let my_nat_type = crate::get_nat_type(100).await;
@@ -1023,7 +1076,15 @@ impl Client {
                             peer_nat_type = ph.nat_type();
                             is_local = ph.is_local();
                             signed_id_pk = ph.pk.into();
-                            relay_server = ph.relay_server;
+                            // The server's own relay address is preferred when it is a
+                            // usable one: it is the address the peer itself will dial for
+                            // the relay, so the two ends meet on the same relay. An
+                            // unusable name (empty, or an address that is not a host at
+                            // all, such as an unexpanded placeholder) leaves the locally
+                            // configured one in place.
+                            if is_usable_relay_address(&ph.relay_server) {
+                                relay_server = ph.relay_server.clone();
+                            }
                             peer_addr = AddrMangle::decode(&ph.socket_addr);
                             feedback = ph.feedback;
                             webrtc_sdp_answer = ph.webrtc_sdp_answer;
@@ -1429,7 +1490,16 @@ impl Client {
         let direct_failures = interface.get_lch().read().unwrap().direct_failures;
         let mut connect_timeout = 0;
         const MIN: u64 = 1000;
-        if is_local || peer_nat_type == NatType::SYMMETRIC {
+        if is_local {
+            // A peer on the same intranet is reached through the FetchLocalAddr/LocalAddr
+            // exchange, so its address is a private one the punch has to reach on the LAN
+            // rather than a punched-through one. That path carries the full handshake, not
+            // just a SYN, so the raw-SYN budget below starves it: the attempt is abandoned
+            // while the peer is still accepting, and the connection fails even though both
+            // machines are on the same wire. Give it the ordinary connect budget instead;
+            // a peer that is genuinely unreachable still fails, just after the usual wait.
+            connect_timeout = CONNECT_TIMEOUT;
+        } else if peer_nat_type == NatType::SYMMETRIC {
             connect_timeout = MIN;
         } else {
             if relay_server.is_empty() {
@@ -1861,12 +1931,25 @@ impl Client {
         // The proxy's address family does not constrain the relay target.
         let relay_server = check_port(relay_server, RELAY_PORT);
         let use_ws_proxy = Config::is_proxy() && is_ws_endpoint(&check_ws(&relay_server));
-        let mut conn = connect_tcp(
-            ipv4_to_ipv6(relay_server, ipv4 || use_ws_proxy),
-            CONNECT_TIMEOUT,
-        )
-        .await
-        .with_context(|| "Failed to connect to relay server")?;
+        // The relay is dialled at the address it is given. The mapped form of an IPv4
+        // literal needs a resolver that can answer for it, which a network without a
+        // route to a public one cannot; the literal beside it reaches the same relay
+        // without asking anyone, so both are tried and the first that opens wins.
+        let mut conn = None;
+        let mut last_err = None;
+        for candidate in socket_client::relay_addresses(relay_server.clone(), ipv4 || use_ws_proxy)
+        {
+            match connect_tcp(candidate, CONNECT_TIMEOUT).await {
+                Ok(c) => {
+                    conn = Some(c);
+                    break;
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+        let mut conn = conn.ok_or_else(|| {
+            last_err.unwrap_or_else(|| anyhow!("Failed to connect to relay server"))
+        })?;
         let mut msg_out = RendezvousMessage::new();
         msg_out.set_request_relay(RequestRelay {
             licence_key: key.to_owned(),
@@ -5395,7 +5478,7 @@ pub mod peer_online {
 
     #[cfg(test)]
     mod tests {
-        use crate::client::Client;
+        use crate::client::{is_usable_relay_address, Client};
         use hbb_common::rendezvous_proto::IceCandidate;
 
         #[test]
@@ -5408,6 +5491,23 @@ pub mod peer_online {
 
             assert!(Client::is_expected_webrtc_ice_candidate(&ice, "session-a"));
             assert!(!Client::is_expected_webrtc_ice_candidate(&ice, "session-b"));
+        }
+
+        /// A relay address that names no host cannot be dialled, so it is refused rather
+        /// than handed to the resolver — which is what a server started with an
+        /// unsubstituted address hands out.
+        #[test]
+        fn refuses_a_relay_address_that_names_no_host() {
+            assert!(is_usable_relay_address("rd.renhetang.cn"));
+            assert!(is_usable_relay_address("rd.renhetang.cn:21117"));
+            assert!(is_usable_relay_address("60.213.11.2:21117"));
+            assert!(is_usable_relay_address("192.168.100.190"));
+            assert!(is_usable_relay_address("[::1]:21117"));
+
+            assert!(!is_usable_relay_address(""));
+            assert!(!is_usable_relay_address("   "));
+            assert!(!is_usable_relay_address("{SERVER_IP}:21117"));
+            assert!(!is_usable_relay_address("{SERVER_IP}"));
         }
     }
 }

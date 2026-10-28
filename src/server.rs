@@ -407,11 +407,29 @@ async fn create_relay_connection_(
     // The proxy's address family does not constrain the relay target.
     let relay_server = crate::check_port(relay_server, RELAY_PORT);
     let use_ws_proxy = Config::is_proxy() && is_ws_endpoint(&check_ws(&relay_server));
-    let mut stream = socket_client::connect_tcp(
-        socket_client::ipv4_to_ipv6(relay_server, ipv4 || use_ws_proxy),
-        CONNECT_TIMEOUT,
-    )
-    .await?;
+    // The relay is dialled at the address it is given. The mapped form of an IPv4 literal
+    // needs a resolver that can answer for it, which a network without a route to a
+    // public one cannot; the literal beside it reaches the same relay without asking
+    // anyone, so both are tried and the first that opens wins.
+    let mut stream = None;
+    let mut last_err = None;
+    for candidate in socket_client::relay_addresses(relay_server.clone(), ipv4 || use_ws_proxy) {
+        match socket_client::connect_tcp(candidate, CONNECT_TIMEOUT).await {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    let mut stream = match stream {
+        Some(s) => s,
+        None => {
+            return Err(last_err.unwrap_or_else(|| {
+                hbb_common::anyhow::anyhow!("Failed to connect to relay server")
+            }))
+        }
+    };
     let mut msg_out = RendezvousMessage::new();
     let licence_key = crate::get_key(true).await;
     msg_out.set_request_relay(RequestRelay {

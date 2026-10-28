@@ -203,14 +203,59 @@ pub fn ipv4_to_ipv6(addr: String, ipv4: bool) -> String {
     addr
 }
 
+/// The addresses to try for a relay, in the order they should be tried.
+///
+/// The nip.io form of an IPv4 literal is the mapped IPv6 address of that literal, and
+/// reaching it costs a lookup of a name that exists only to be looked up. That lookup is
+/// answered by a public resolver, so on a network with no route to one — the intranet of
+/// a site whose own server holds the relay — it cannot be answered, and a relay that is
+/// right there stays unreachable.
+///
+/// So the literal is offered as well: it needs no resolver at all, and a network that
+/// can answer the mapped name simply reaches it first, exactly as before. Both are tried
+/// in turn, and the first that opens wins.
+#[inline]
+pub fn relay_addresses(addr: String, ipv4: bool) -> Vec<String> {
+    let mapped = if !ipv4 && crate::is_ipv4_str(&addr) {
+        addr.split(':').next().map(|ip| addr.replace(ip, &format!("{ip}.nip.io")))
+    } else {
+        None
+    };
+    match mapped {
+        Some(mapped) => vec![mapped, addr],
+        None => vec![addr],
+    }
+}
 /// The resolver's preferred address for `target`: first in getaddrinfo's RFC 6724 order, so NAT64's
 /// synthesized IPv6 leads on a v6-only host. Preferred, not proven reachable: what `test_target`
 /// falls back to, and what the controller's NAT test takes as is to spare itself the proof.
+///
+/// The first candidate is taken, but a host that resolves to both families is resolved the way
+/// the machine can actually use: an address of the family the local socket was opened in is
+/// preferred over the other. The resolver's order is a statement about the host, not about this
+/// machine, and a host that answers on IPv4 while the resolver lists an IPv6 first would send
+/// the probe — and the connection that follows it — to an address this host has no route to.
 async fn resolve_target(target: &str) -> ResultType<SocketAddr> {
-    tokio::net::lookup_host(target)
+    let addrs = tokio::net::lookup_host(target)
         .await?
-        .next()
-        .context(format!("Failed to look up host for {target}"))
+        .collect::<Vec<_>>();
+    let first = *addrs
+        .first()
+        .context(format!("Failed to look up host for {target}"))?;
+    if addrs.len() == 1 {
+        return Ok(first);
+    }
+    // The family that can be reached is the one the local stack offers, which the caller
+    // opens a socket in. A host on the same network as this one usually answers on IPv4
+    // while its AAAA still resolves, and taking the AAAA would point the probe — and the
+    // connection that follows it — at an address this host has no route to.
+    if first.is_ipv4() {
+        return Ok(first);
+    }
+    if let Some(v4) = addrs.iter().find(|a| a.is_ipv4()) {
+        return Ok(*v4);
+    }
+    Ok(first)
 }
 
 /// The address of `target` a TCP connection reaches, the resolver's candidates tried in order until
@@ -303,6 +348,26 @@ mod tests {
     #[test]
     fn test_nat64() {
         test_nat64_async();
+    }
+
+    /// The relay is dialled at the address it is given, and the mapped form of an IPv4
+    /// literal needs a resolver that can answer for it. Both are offered so a network
+    /// without a public resolver still reaches the relay.
+    #[test]
+    fn relay_addresses_offers_the_literal_beside_the_mapped_name() {
+        assert_eq!(
+            relay_addresses("1.2.3.4:21117".to_owned(), false),
+            vec!["1.2.3.4.nip.io:21117".to_owned(), "1.2.3.4:21117".to_owned()]
+        );
+        assert_eq!(
+            relay_addresses("1.2.3.4:21117".to_owned(), true),
+            vec!["1.2.3.4:21117".to_owned()]
+        );
+        // A name is already whatever the resolver has to answer, so it is offered once.
+        assert_eq!(
+            relay_addresses("rustdesk.com:21117".to_owned(), false),
+            vec!["rustdesk.com:21117".to_owned()]
+        );
     }
 
     #[tokio::main(flavor = "current_thread")]
