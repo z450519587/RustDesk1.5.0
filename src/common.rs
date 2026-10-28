@@ -62,6 +62,14 @@ pub const TIMER_OUT: Duration = Duration::from_secs(1);
 pub(crate) const API_LOG_INTERVAL: Duration = Duration::from_secs(600);
 pub const DEFAULT_KEEP_ALIVE: i32 = 60_000;
 
+/// How long to wait for the rendezvous server to start the key exchange.
+///
+/// A server that does the exchange sends it as soon as the connection is up, so this only
+/// has to cover that round trip. It is short because a server that does not do the exchange
+/// never sends anything, and every connection would otherwise wait out the full read
+/// timeout before falling back.
+const KEY_EXCHANGE_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 const MIN_VER_MULTI_UI_SESSION: &str = "1.2.4";
 
 pub mod input {
@@ -96,6 +104,11 @@ lazy_static::lazy_static! {
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
     static ref PUBLIC_IPV6_ADDR: Arc<Mutex<(Option<SocketAddr>, Option<Instant>)>> = Default::default();
+    // Rendezvous servers that were found not to start the key exchange. A server that does
+    // start it answers as soon as the connection is up, so one short probe settles it, and
+    // the answer is kept so later connections to the same server skip the wait entirely.
+    static ref SERVERS_WITHOUT_KEY_EXCHANGE: Mutex<std::collections::HashSet<String>> =
+        Default::default();
 }
 
 lazy_static::lazy_static! {
@@ -2224,7 +2237,45 @@ async fn key_exchange(conn: &mut Stream, key: &str, log_on_success: bool) -> Res
     let Some(rs_pk) = rs_pk else {
         bail!("Handshake failed: invalid public key from rendezvous server");
     };
-    match timeout(READ_TIMEOUT, conn.next()).await? {
+    // A server that never sends the first message leaves us waiting. That is how every hbbs
+    // before the server side of the exchange behaves: it waits for the client to speak first,
+    // and the client waits for the server, so neither moves. Treat the silence as "this server
+    // does not do the exchange" rather than as a failure, so a client that talked to such a
+    // server can still reach it.
+    //
+    // Only the silence is tolerated. A reply that arrives but does not verify is a different
+    // matter: that is either a broken server or a party that is not the server, and it stays
+    // an error.
+    //
+    // A server that does the exchange answers as soon as the connection is up, so the first
+    // probe only waits briefly; a server already known not to do it is not waited for at all.
+    let server = conn.1.to_string();
+    if SERVERS_WITHOUT_KEY_EXCHANGE
+        .lock()
+        .unwrap()
+        .contains(&server)
+    {
+        log::info!(
+            "rendezvous server {} does not do the key exchange, continuing unencrypted",
+            server
+        );
+        return Ok(false);
+    }
+    let first = match timeout(KEY_EXCHANGE_PROBE_TIMEOUT, conn.next()).await {
+        Ok(v) => v,
+        Err(_) => {
+            SERVERS_WITHOUT_KEY_EXCHANGE
+                .lock()
+                .unwrap()
+                .insert(server.clone());
+            log::warn!(
+                "rendezvous server {} did not start the key exchange, continuing unencrypted",
+                server
+            );
+            return Ok(false);
+        }
+    };
+    match first {
         Some(Ok(bytes)) => {
             if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {
                 match msg_in.union {
