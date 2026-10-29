@@ -55,7 +55,7 @@ use hbb_common::{
     rand,
     rendezvous_proto::*,
     sha2::{Digest, Sha256},
-    socket_client::{connect_tcp, connect_tcp_local, new_direct_udp_for_unverified},
+    socket_client::{connect_tcp, connect_tcp_local, new_direct_udp_for_unverified, relay_addresses},
     sodiumoxide::{base64, crypto::sign},
     timeout,
     tokio::{
@@ -1937,8 +1937,7 @@ impl Client {
         // without asking anyone, so both are tried and the first that opens wins.
         let mut conn = None;
         let mut last_err = None;
-        for candidate in socket_client::relay_addresses(relay_server.clone(), ipv4 || use_ws_proxy)
-        {
+        for candidate in relay_addresses(relay_server.clone(), ipv4 || use_ws_proxy) {
             match connect_tcp(candidate, CONNECT_TIMEOUT).await {
                 Ok(c) => {
                     conn = Some(c);
