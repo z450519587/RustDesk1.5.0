@@ -66,3 +66,6 @@ deploy/store_sync.json
 
 # 出厂配置（含 adminToken 密钥，由 GitHub Secret 注入构建，禁止入库）
 deploy/store_config.json
+
+# 临时 CI 监控脚本，不入库
+_mon*.py
