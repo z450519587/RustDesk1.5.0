@@ -3,7 +3,7 @@
 # 用法: .\sync_store_name.ps1 -StoreName "仁和堂XX店"
 #   -StoreName  必填，要写入的门店名称
 #   -RustDeskId 可选，本机 RustDesk ID（省略时自动获取）
-#   -ApiServer  可选，API 服务器地址（省略时读 store_sync.json）
+#   -ApiServer  可选，API 服务器地址（省略时读 store_config.json）
 
 param(
   [Parameter(Mandatory = $true)] [string] $StoreName,
@@ -17,12 +17,25 @@ $ErrorActionPreference = 'Stop'
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
-# ---- 读取 store_sync.json 配置 ----
-$cfgPath = Join-Path $ScriptDir 'store_sync.json'
+# ---- 读取配置文件 ----
+# 新版出厂配置是 store_config.json，旧版是 store_sync.json。
+# 两者都读，store_config.json 优先 —— 分发时通常只带新名字。
+$cfgPaths = @(
+  (Join-Path $ScriptDir 'store_config.json'),
+  (Join-Path $ScriptDir 'store_sync.json')
+)
 $cfg = New-Object PSObject
-if (Test-Path $cfgPath) {
-  # 必须显式 UTF8：PS5.1 默认按 ANSI(GBK) 读文件，会把中文配置读成乱码
-  $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+foreach ($p in $cfgPaths) {
+  if (Test-Path $p) {
+    # 必须显式 UTF8：PS5.1 默认按 ANSI(GBK) 读文件，会把中文配置读成乱码
+    try {
+      $cfg = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+      Write-Host ('配置文件：' + $p)
+      break
+    } catch {
+      Write-Warn ('配置文件解析失败 ' + $p + '：' + $_.Exception.Message)
+    }
+  }
 }
 
 $adminToken = ''
@@ -35,8 +48,8 @@ if (-not $ApiServer) {
   if ($cfg.PSObject.Properties['apiServer']) { $ApiServer = $cfg.apiServer.ToString().Trim() }
 }
 
-if (-not $adminToken) { Write-Host 'X 未配置 adminToken（请先在 store_sync.json 填写）' -ForegroundColor Red; exit 1 }
-if (-not $ApiServer)  { Write-Host 'X 未提供 ApiServer（用 -ApiServer 或 store_sync.json 的 apiServer）' -ForegroundColor Red; exit 1 }
+if (-not $adminToken) { Write-Host 'X 未配置 adminToken（请先在 store_config.json 填写）' -ForegroundColor Red; exit 1 }
+if (-not $ApiServer)  { Write-Host 'X 未提供 ApiServer（用 -ApiServer 或 store_config.json 的 apiServer）' -ForegroundColor Red; exit 1 }
 $base = $ApiServer.TrimEnd('/')
 
 # ---- 获取本机 RustDesk ID ----
