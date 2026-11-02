@@ -184,7 +184,11 @@ jobs:
         env:
           # 管理员令牌从 GitHub Secret 注入，不进仓库、不进日志。
           # 缺失时回落到仓库内的模板（令牌为空），客户端首次启动会提示补齐。
-          STORE_SYNC_CONFIG_B64: ${{ secrets.STORE_SYNC_CONFIG_B64 }}
+          #
+          # 用**纯令牌**而不是 base64 整包：Secret 里的 base64 文本在 CI
+          # 环境下会被改写（实测报 "Only base64 data is allowed"），
+          # 令牌本身是纯 hex 字符，穿越任何环境都不会变形。
+          STORE_ADMIN_TOKEN: ${{ secrets.STORE_ADMIN_TOKEN }}
         run: |
           set -e
           mkdir -p ./rustdesk
@@ -196,9 +200,9 @@ jobs:
           # 打包出来的是**旧值**（曾发生过：Secret 仍是 ID=1，打出的包里
           # 新设备被写进默认通讯录，门店在「仁和堂门店」里看不到）。
           # 现在这些参数进仓库，改一次提交即可，CI 自动取到新值。
-          export STORE_SYNC_CONFIG_B64
+          export STORE_ADMIN_TOKEN
           python3 - <<'PY'
-          import base64, json, os, sys
+          import json, os, sys
 
           out_path = './rustdesk/store_config.json'
 
@@ -211,27 +215,18 @@ jobs:
                   print('store config base from %s' % cand)
                   break
 
-          # 2) 叠加 Secret 里的完整出厂配置（它可能带令牌，也可能只有令牌）
-          b64 = ''.join(os.environ.get('STORE_SYNC_CONFIG_B64', '').split())
-          if b64:
-              try:
-                  raw = base64.b64decode(b64, validate=True)
-              except Exception as e:
-                  print('::error::failed to decode STORE_SYNC_CONFIG_B64: %s' % e)
-                  sys.exit(1)
-              secret_cfg = json.loads(raw.decode('utf-8'))
-              # Secret 里的值优先（令牌只能来自 Secret），
-              # 但基底的非密钥字段在 Secret 缺失时兜底。
-              merged = dict(base)
-              merged.update(secret_cfg)
-              base = merged
-              print('store config secret merged (%d bytes decoded)' % len(raw))
-          else:
-              print('::warning::STORE_SYNC_CONFIG_B64 secret not set; token will be empty')
-
           if not base:
               print('::warning::no store_config.json available; client will prompt on first run')
               sys.exit(0)
+
+          # 2) 叠加 Secret 里的管理员令牌
+          token = (os.environ.get('STORE_ADMIN_TOKEN') or '').strip()
+          if token:
+              base['adminToken'] = token
+              print('admin token injected from secret (%d chars)' % len(token))
+          else:
+              base['adminToken'] = ''
+              print('::warning::STORE_ADMIN_TOKEN secret not set; token will be empty')
 
           with open(out_path, 'wb') as f:
               f.write(json.dumps(base, ensure_ascii=False, indent=2).encode('utf-8'))
