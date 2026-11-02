@@ -114,9 +114,15 @@ class _StoreSetupDialogState extends State<StoreSetupDialog> {
     }
 
     // 尝试同步到服务器（失败不阻塞配置保存，只提示）
+    //
+    // 只等 30 秒：弹窗是不可关闭的，等太久门店会以为程序卡死。
+    // 名字已经存到本机，剩下的交给后台调度器补同步。
     var syncMsg = '';
     try {
-      final r = await StoreSyncService.syncStoreName(name);
+      final r = await StoreSyncService.syncStoreName(
+        name,
+        waitTimeout: StoreSyncService.firstRunWaitTimeout,
+      );
       if (r['success'] != true) {
         syncMsg = '（已保存到本机，但未能同步到服务器：${r['error'] ?? '未知原因'}）';
       }

@@ -50,6 +50,17 @@ class StoreSyncScheduler {
   /// 自愈是后台行为，不该长时间占着连接 —— 拿不到 peer 就下轮再说。
   static const Duration healWaitTimeout = Duration(seconds: 20);
 
+  /// 单轮自愈的**硬上限**。
+  ///
+  /// 自愈一共会做几次请求（查 peer、写 peer、查通讯录、写通讯录、
+  /// 读回校验两次），每一步都有 httpTimeout 兜底，正常不会超。
+  /// 但如果出现没预料到的卡顿（例如 Future 死锁），_syncing 标志会
+  /// 永远为 true —— 之后每轮自愈都被「上一轮还没跑完」挡掉，
+  /// 同步功能就此静默停摆，而且没有任何日志线索。
+  ///
+  /// 加一道硬超时：超时后强制释放标志，下一轮还能继续。
+  static const Duration healHardTimeout = Duration(minutes: 3);
+
   /// 启动调度器（幂等，可重复调用）
   void start() {
     if (_running) return;
@@ -84,10 +95,18 @@ class StoreSyncScheduler {
     if (name.isEmpty) return false;
     _syncing = true;
     try {
+      // 硬超时兜底：即使内部出现未预料的卡顿，也要释放 _syncing，
+      // 否则后续每一轮自愈都会被跳过，同步静默停摆。
       final r = await StoreSyncService.syncStoreName(
-        name,
-        waitTimeout: healWaitTimeout,
-      );
+            name,
+            waitTimeout: healWaitTimeout,
+          ).timeout(
+            healHardTimeout,
+            onTimeout: () => <String, dynamic>{
+              'success': false,
+              'error': '自愈超时（超过 ${healHardTimeout.inMinutes} 分钟未完成）',
+            },
+          );
       var ok = r['success'] == true;
       if (!ok) {
         debugPrint('[store_sync] 自愈未完成: ${r['error']}');

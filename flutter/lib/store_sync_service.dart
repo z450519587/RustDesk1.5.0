@@ -26,6 +26,29 @@ class StoreSyncService {
   /// 轮询 peer 上线的间隔
   static const Duration peerWaitInterval = Duration(seconds: 5);
 
+  /// **首启弹窗**里等待 peer 上线的上限。
+  ///
+  /// 与后台自愈用的 [peerWaitTimeout]（5 分钟）刻意区分开：
+  /// 弹窗是不可关闭的（barrierDismissible: false，且没有「稍后再说」按钮），
+  /// 门店点完「保存并同步」就得干等。如果这里也等 5 分钟，
+  /// 现场表现为「程序卡死，只能强制结束进程」—— 门店根本不会用。
+  ///
+  /// 所以弹窗只等 30 秒：够正常情况（设备通常已经上线），
+  /// 不够就让后台调度器接着补。反正名字已经存到本机了。
+  static const Duration firstRunWaitTimeout = Duration(seconds: 30);
+
+  /// 单次 HTTP 请求的超时。
+  ///
+  /// HttpClient 默认**没有任何超时**（连接与读取都是无限等）。门店机在
+  /// 拔网线、服务器重启、代理挂起等情况下，请求会一直挂着不返回，
+  /// 于是：
+  ///   - 首启弹窗的「保存并同步」会卡住，且弹窗不可关闭（无超时），
+  ///     门店只能强制杀进程；
+  ///   - 后台自愈的 _syncing 标志一直为 true，之后每轮自愈都被跳过，
+  ///     等于同步功能彻底停摆。
+  /// 加了超时后，最坏情况是「这次同步失败」，后台调度器下轮重试。
+  static const Duration httpTimeout = Duration(seconds: 20);
+
   /// 从分层配置读取同步所需字段。
   ///
   /// 出厂配置（随包分发，含 adminToken）的定位由 StoreConfigService 负责，
@@ -126,6 +149,9 @@ class StoreSyncService {
       final client = HttpClient();
       // 内网自签证书放行（内部工具，仅用于同步门店名称）
       client.badCertificateCallback = (cert, host, port) => true;
+      // 必须设超时：HttpClient 默认无限等待，网络异常时请求会永久挂起
+      client.connectionTimeout = httpTimeout;
+      client.idleTimeout = httpTimeout;
       try {
         // ---------- 1) 设备管理别名 ----------
         // 先查；查不到就等一会儿再查 —— 首次装机时服务端还没建本机记录，
@@ -147,8 +173,8 @@ class StoreSyncService {
             'id': rid,
             'alias': storeName,
           })));
-          final updResp = await updReq.close();
-          await updResp.drain<void>();
+          final updResp = await updReq.close().timeout(httpTimeout);
+          await updResp.drain<void>().timeout(httpTimeout);
           result['peer'] = updResp.statusCode == 200;
         } else {
           result['error'] =
@@ -159,8 +185,9 @@ class StoreSyncService {
         final abListReq = await client.getUrl(Uri.parse(
             '$base/api/admin/address_book/list?user_id=$abUserId&collection_id=$abCollectionId&id=$rid'));
         abListReq.headers.set('api-token', adminToken);
-        final abListResp = await abListReq.close();
-        final abListBody = await abListResp.transform(utf8.decoder).join();
+        final abListResp = await abListReq.close().timeout(httpTimeout);
+        final abListBody =
+            await abListResp.transform(utf8.decoder).join().timeout(httpTimeout);
         int? abRowId;
         if (abListResp.statusCode == 200) {
           final j = jsonDecode(abListBody);
@@ -185,8 +212,8 @@ class StoreSyncService {
         abReq.headers.set('Content-Type', 'application/json; charset=utf-8');
         abReq.headers.set('api-token', adminToken);
         abReq.add(utf8.encode(jsonEncode(abPayload)));
-        final abResp = await abReq.close();
-        await abResp.drain<void>();
+        final abResp = await abReq.close().timeout(httpTimeout);
+        await abResp.drain<void>().timeout(httpTimeout);
         result['addressBook'] = abResp.statusCode == 200;
 
         // ---------- 3) 读回校验：确认落库中文没乱码 ----------
@@ -228,6 +255,10 @@ class StoreSyncService {
   ///
   /// 所以这里按 [peerWaitInterval] 轮询，直到 [timeout] 用尽。
   /// 等不到返回 null，由调用方把状态记为待补。
+  ///
+  /// 注意：单次请求的超时会被**剩余预算**裁剪 —— 否则一次卡住的请求
+  /// （20 秒）会把 30 秒的预算拖成 45 秒，超出调用方（首启弹窗）
+  /// 能接受的等待时长。
   static Future<int?> _waitForPeerRowId({
     required HttpClient client,
     required String base,
@@ -237,27 +268,40 @@ class StoreSyncService {
   }) async {
     final deadline = DateTime.now().add(timeout);
     while (true) {
-      final rowId = await _findPeerRowId(client, base, adminToken, rid);
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) return null;
+      // 单次请求最多用掉剩余预算与 httpTimeout 的较小值
+      final slice = remaining < httpTimeout ? remaining : httpTimeout;
+      final rowId =
+          await _findPeerRowId(client, base, adminToken, rid, slice);
       if (rowId != null && rowId > 0) {
         return rowId;
       }
-      if (!DateTime.now().isBefore(deadline)) {
-        return null;
-      }
-      await Future.delayed(peerWaitInterval);
+      final left = deadline.difference(DateTime.now());
+      if (left <= Duration.zero) return null;
+      // 只等到剩余预算用完，但至少等一个轮询间隔（保证不忙等）
+      await Future.delayed(
+          left < peerWaitInterval ? left : peerWaitInterval);
     }
   }
 
   /// 在设备管理里查本机的 row_id；查不到返回 null。
+  ///
+  /// [timeout] 限定单次请求的上限（由调用方按剩余预算给出）。
   static Future<int?> _findPeerRowId(
-      HttpClient client, String base, String adminToken, String rid) async {
+      HttpClient client,
+      String base,
+      String adminToken,
+      String rid,
+      [Duration? timeout]) async {
     try {
       final req =
           await client.getUrl(Uri.parse('$base/api/admin/peer/list?id=$rid'));
       req.headers.set('api-token', adminToken);
       req.headers.set('Accept', 'application/json');
-      final resp = await req.close();
-      final body = await resp.transform(utf8.decoder).join();
+      final limit = timeout ?? httpTimeout;
+      final resp = await req.close().timeout(limit);
+      final body = await resp.transform(utf8.decoder).join().timeout(limit);
       if (resp.statusCode != 200) return null;
       final j = jsonDecode(body);
       for (final e in _extractList(j['data'])) {
@@ -279,8 +323,8 @@ class StoreSyncService {
           '$base/api/admin/address_book/list?user_id=$userId&collection_id=$collectionId&id=$rid'));
       req.headers.set('api-token', adminToken);
       req.headers.set('Accept', 'application/json');
-      final resp = await req.close();
-      final body = await resp.transform(utf8.decoder).join();
+      final resp = await req.close().timeout(httpTimeout);
+      final body = await resp.transform(utf8.decoder).join().timeout(httpTimeout);
       if (resp.statusCode != 200) return null;
       final j = jsonDecode(body);
       for (final e in _extractList(j['data'])) {
@@ -305,8 +349,10 @@ class StoreSyncService {
       req.headers.set('Content-Type', 'application/json; charset=utf-8');
       req.headers.set('api-token', adminToken);
       req.add(utf8.encode(jsonEncode(payload)));
-      final resp = await req.close();
-      await resp.drain<void>();
+      // connectionTimeout 只管「建连」，响应体读取仍可能无限挂起，
+      // 这里再包一层 Future.timeout 兜底。
+      final resp = await req.close().timeout(httpTimeout);
+      await resp.drain<void>().timeout(httpTimeout);
       return resp.statusCode;
     } catch (e) {
       debugPrint('[store_sync] POST 失败 $url: $e');
@@ -346,6 +392,9 @@ class StoreSyncService {
 
       final client = HttpClient();
       client.badCertificateCallback = (cert, host, port) => true;
+      // 必须设超时：HttpClient 默认无限等待，网络异常时请求会永久挂起
+      client.connectionTimeout = httpTimeout;
+      client.idleTimeout = httpTimeout;
       try {
         final serverAlias = await _readAlias(
             client, base, adminToken, rid, false, abUserId, abCollectionId);
@@ -396,8 +445,8 @@ class StoreSyncService {
       final req = await client.getUrl(Uri.parse(url));
       req.headers.set('api-token', adminToken);
       req.headers.set('Accept', 'application/json');
-      final resp = await req.close();
-      final body = await resp.transform(utf8.decoder).join();
+      final resp = await req.close().timeout(httpTimeout);
+      final body = await resp.transform(utf8.decoder).join().timeout(httpTimeout);
       if (resp.statusCode != 200) return '';
       final j = jsonDecode(body);
       for (final e in _extractList(j['data'])) {

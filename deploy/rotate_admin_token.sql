@@ -1,0 +1,76 @@
+-- ============================================================
+--  管理员令牌轮换（安全修复，务必执行）
+-- ============================================================
+--
+--  【为什么必须轮换】
+--  管理员令牌 971f5a924fa1e3fc9f1e3ab3bb362fb3 曾以明文出现在
+--  GitHub 公开仓库的文档里（仓库 z450519587/RustDesk1.5.0 为 public）。
+--  虽然当前文件已替换为占位符，但**历史提交无法真正抹除**，
+--  任何人都能从 git log 里翻出来。
+--
+--  → 唯一彻底的补救是：**让旧令牌失效，启用新令牌**。
+--
+--  【执行前提】
+--  需要能访问 API 服务器的 MySQL（服务跑在 Docker 里，
+--  数据在 data/ 目录的卷挂载中）。在服务器上执行。
+--
+--  【执行步骤】
+--
+--  ---- 第 1 步：拿一个新的管理员令牌 ----------------------------
+--  用管理员账号登录 API 后台，复制访问令牌，记作 NEW_TOKEN。
+--  命令行方式（把 <user>/<pass> 换成实际账号）：
+--
+--    curl -X POST https://rd.renhetang.cn:21114/admin/login \
+--      -H 'Content-Type: application/json' \
+--      -d '{"username":"<user>","password":"<pass>"}'
+--
+--  返回 JSON 里的 data.token（或 access_token）就是 NEW_TOKEN。
+--
+--  ---- 第 2 步：让新令牌永不过期 ------------------------------
+--  该服务校验 api-token 时，是把它当字符串去 user_tokens 表查，
+--  再判断 expired_at 是否大于当前时间（不是 JWT 验签）。
+--  253402300799 = 公元 9999-12-31，等价于永久。
+--
+--    UPDATE user_tokens
+--       SET expired_at = 253402300799
+--     WHERE token = 'NEW_TOKEN';
+--
+--  ---- 第 3 步：让旧令牌失效（关键！） ------------------------
+--
+--    DELETE FROM user_tokens WHERE token = '971f5a924fa1e3fc9f1e3ab3bb362fb3';
+--
+--    或更保险（先禁用，观察一再删）：
+--
+--    UPDATE user_tokens
+--       SET expired_at = 1
+--     WHERE token = '971f5a924fa1e3fc9f1e3ab3bb362fb3';
+--
+--  ---- 第 4 步：校验 ------------------------------------------
+--
+--    SELECT token, expired_at FROM user_tokens
+--     WHERE token IN ('971f5a924fa1e3fc9f1e3ab3bb362fb3', 'NEW_TOKEN');
+--
+--    期望：旧令牌那一行**不存在**（或 expired_at 已是过去时间），
+--          新令牌那一行 expired_at = 253402300799。
+--
+--  ---- 第 5 步：更新客户端出厂配置与 Secret --------------------
+--  在**开发机**上执行（仓库目录）：
+--
+--    # 1) 改本地配置里的令牌
+--    #    编辑 deploy/store_config.json，把 adminToken 换成新令牌
+--
+--    # 2) 刷新 GitHub Secret（明文注入，不做 base64）
+--    python deploy/update_store_secret.py
+--
+--    # 3) 重新构建，产出带新令牌安装包
+--    git add deploy/store_config.json && git commit -m "chore: rotate the admin token"
+--    git push origin master
+--    #    等 CI 跑完，从 Release 下载新包
+--
+--  ---- 第 6 步：门店机换包 ------------------------------------
+--  旧包的令牌已失效，**旧包的门店名同步会失败**（不影响远程连接，
+--  只是门店名不再同步）。所以需要把新包分发到门店机，覆盖安装。
+--  覆盖安装不会丢门店名（存在 %APPDATA%\RustDesk\config\ 下，
+--  不在安装目录里）。
+--
+--  ============================================================
