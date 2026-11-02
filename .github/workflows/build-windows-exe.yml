@@ -182,39 +182,63 @@ jobs:
       - name: Prepare store config (随包分发)
         shell: bash
         env:
-          # 出厂配置（含 adminToken）从 GitHub Secret 注入，不进仓库、不进日志。
+          # 管理员令牌从 GitHub Secret 注入，不进仓库、不进日志。
           # 缺失时回落到仓库内的模板（令牌为空），客户端首次启动会提示补齐。
           STORE_SYNC_CONFIG_B64: ${{ secrets.STORE_SYNC_CONFIG_B64 }}
         run: |
           set -e
           mkdir -p ./rustdesk
-          if [ -n "$STORE_SYNC_CONFIG_B64" ]; then
-            # 用 python3 解码而不是 `base64 -d`：
-            # Git Bash 的 coreutils base64 只接受单行输入，遇到 Secret 里的
-            # 换行会报 "base64: invalid input" 并让整个步骤失败。
-            # python3 解码前先剥掉所有空白，对单行/多行都安全。
-            export STORE_SYNC_CONFIG_B64
-            python3 - <<'PY'
-          import base64, os, sys
+          # 最终出厂配置 = 仓库版本化配置（deploy/store_settings.json）
+          #                 + Secret 里的管理员令牌。
+          #
+          # 为什么要拆成两层：通讯录 ID 这类「会写错数据」的参数如果只存在
+          # Secret 里，改一次就要同时改 Secret 和本地仓库，两边不同步时
+          # 打包出来的是**旧值**（曾发生过：Secret 仍是 ID=1，打出的包里
+          # 新设备被写进默认通讯录，门店在「仁和堂门店」里看不到）。
+          # 现在这些参数进仓库，改一次提交即可，CI 自动取到新值。
+          export STORE_SYNC_CONFIG_B64
+          python3 - <<'PY'
+          import base64, json, os, sys
+
+          out_path = './rustdesk/store_config.json'
+
+          # 1) 基底：仓库内的版本化配置（无密钥，可安全进仓库）
+          base = {}
+          for cand in ('./deploy/store_settings.json', './deploy/store_config.example.json'):
+              if os.path.isfile(cand):
+                  with open(cand, 'rb') as f:
+                      base = json.loads(f.read().decode('utf-8'))
+                  print('store config base from %s' % cand)
+                  break
+
+          # 2) 叠加 Secret 里的完整出厂配置（它可能带令牌，也可能只有令牌）
           b64 = ''.join(os.environ.get('STORE_SYNC_CONFIG_B64', '').split())
-          try:
-              raw = base64.b64decode(b64, validate=True)
-          except Exception as e:
-              print('::error::failed to decode STORE_SYNC_CONFIG_B64: %s' % e)
-              sys.exit(1)
-          with open('./rustdesk/store_config.json', 'wb') as f:
-              f.write(raw)
-          print('store_config.json injected from secret (%d bytes)' % len(raw))
+          if b64:
+              try:
+                  raw = base64.b64decode(b64, validate=True)
+              except Exception as e:
+                  print('::error::failed to decode STORE_SYNC_CONFIG_B64: %s' % e)
+                  sys.exit(1)
+              secret_cfg = json.loads(raw.decode('utf-8'))
+              # Secret 里的值优先（令牌只能来自 Secret），
+              # 但基底的非密钥字段在 Secret 缺失时兜底。
+              merged = dict(base)
+              merged.update(secret_cfg)
+              base = merged
+              print('store config secret merged (%d bytes decoded)' % len(raw))
+          else:
+              print('::warning::STORE_SYNC_CONFIG_B64 secret not set; token will be empty')
+
+          if not base:
+              print('::warning::no store_config.json available; client will prompt on first run')
+              sys.exit(0)
+
+          with open(out_path, 'wb') as f:
+              f.write(json.dumps(base, ensure_ascii=False, indent=2).encode('utf-8'))
+          print('keys:', sorted(base.keys()))
+          print('has_token:', bool(base.get('adminToken')))
+          print('collection_id:', base.get('addressBookCollectionId'))
           PY
-            # 校验是合法 JSON 且含预期键，避免坏配置打进包
-            python3 -c "import json;d=json.load(open('./rustdesk/store_config.json'));print('keys:',sorted(d.keys()));print('has_token:',bool(d.get('adminToken')))"
-          elif [ -f ./deploy/store_config.example.json ]; then
-            cp ./deploy/store_config.example.json ./rustdesk/store_config.json
-            echo "::warning::STORE_SYNC_CONFIG_B64 secret not set; using template without token"
-            python3 -c "import json;d=json.load(open('./rustdesk/store_config.json'));print('keys:',sorted(d.keys()));print('has_token:',bool(d.get('adminToken')))"
-          else
-            echo "::warning::no store_config.json available; client will prompt on first run"
-          fi
 
       - name: Build self-extracted executable
         shell: bash

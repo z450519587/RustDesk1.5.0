@@ -52,11 +52,15 @@ class StoreConfigService {
   ///
   /// API 服务器用**公网域名**而不是内网 IP：门店机可能不在公司内网
   /// （员工回家、笔记本带出等），写死内网地址会导致门店名同步不到服务器。
+  ///
+  /// 通讯录 ID 默认取 **3 =「仁和堂门店」共享通讯录**：这是门店端唯一
+  /// 应该写入的通讯录。若出厂配置文件缺失，兜底值必须与它一致，
+  /// 否则新设备会被写进默认通讯录（ID=1）而门店看不到。
   static const Map<String, dynamic> kDefaults = <String, dynamic>{
     kKeyApiServer: 'http://rd.renhetang.cn:21114',
     kKeyAdminToken: '',
     kKeyAddressBookUserId: 1,
-    kKeyAddressBookCollectionId: 1,
+    kKeyAddressBookCollectionId: 3,
     kKeyStoreName: '',
   };
 
