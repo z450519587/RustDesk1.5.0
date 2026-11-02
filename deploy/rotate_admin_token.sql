@@ -3,7 +3,7 @@
 -- ============================================================
 --
 --  【为什么必须轮换】
---  管理员令牌 971f5a924fa1e3fc9f1e3ab3bb362fb3 曾以明文出现在
+--  管理员令牌（曾以明文出现在
 --  GitHub 公开仓库的文档里（仓库 z450519587/RustDesk1.5.0 为 public）。
 --  虽然当前文件已替换为占位符，但**历史提交无法真正抹除**，
 --  任何人都能从 git log 里翻出来。
@@ -37,18 +37,21 @@
 --
 --  ---- 第 3 步：让旧令牌失效（关键！） ------------------------
 --
---    DELETE FROM user_tokens WHERE token = '971f5a924fa1e3fc9f1e3ab3bb362fb3';
+--    DELETE FROM user_tokens WHERE token = '<OLD_TOKEN>';
 --
 --    或更保险（先禁用，观察一再删）：
 --
 --    UPDATE user_tokens
 --       SET expired_at = 1
---     WHERE token = '971f5a924fa1e3fc9f1e3ab3bb362fb3';
+--     WHERE token = '<OLD_TOKEN>';
+--
+--    <OLD_TOKEN> 就是当前在用的那个令牌，从开发机的
+--    deploy/store_config.json 里读（该文件被 .gitignore 忽略，不在仓库里）。
 --
 --  ---- 第 4 步：校验 ------------------------------------------
 --
 --    SELECT token, expired_at FROM user_tokens
---     WHERE token IN ('971f5a924fa1e3fc9f1e3ab3bb362fb3', 'NEW_TOKEN');
+--     WHERE token IN ('<OLD_TOKEN>', 'NEW_TOKEN');
 --
 --    期望：旧令牌那一行**不存在**（或 expired_at 已是过去时间），
 --          新令牌那一行 expired_at = 253402300799。
@@ -57,13 +60,17 @@
 --  在**开发机**上执行（仓库目录）：
 --
 --    # 1) 改本地配置里的令牌
---    #    编辑 deploy/store_config.json，把 adminToken 换成新令牌
+--    #    编辑 deploy/store_config.json，把 adminToken 换成新令牌。
+--    #    ⚠️ 这个文件被 .gitignore 忽略（含真凭据），**不要 git add 它** ——
+--    #    提交它等于把新令牌又写进公开仓库，等于白轮换。
 --
 --    # 2) 刷新 GitHub Secret（明文注入，不做 base64）
 --    python deploy/update_store_secret.py
 --
---    # 3) 重新构建，产出带新令牌安装包
---    git add deploy/store_config.json && git commit -m "chore: rotate the admin token"
+--    # 3) 触发构建，产出带新令牌安装包
+--    #    版本化文件 deploy/store_settings.json 不含密钥，无需改动。
+--    #    用空提交触发 CI 即可：
+--    git commit --allow-empty -m "chore: rebuild with the rotated admin token"
 --    git push origin master
 --    #    等 CI 跑完，从 Release 下载新包
 --
