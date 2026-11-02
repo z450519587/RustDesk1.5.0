@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/store_config_service.dart';
 
@@ -30,21 +32,41 @@ class _StoreInfoBadgeState extends State<StoreInfoBadge> {
   static const Color _goldLight = Color(0xFF6E4E0E);
   static const Color _goldDark = Color(0xFFF0C060);
 
+  Timer? _timer;
+
   @override
   void initState() {
     super.initState();
     _refresh();
+    // 同步状态会随后台自愈变化，定期刷新让状态能自动更新
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) => _refresh());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
   }
 
   Future<void> _refresh() async {
     final name = await StoreConfigService.loadStoreName();
     final hasToken = await StoreConfigService.hasAdminToken();
+    final state = await StoreConfigService.loadSyncState();
     if (!mounted) return;
     setState(() {
       _storeName = name;
-      _status = name.isEmpty
-          ? (hasToken ? '尚未填写门店名称' : '未检测到出厂配置')
-          : (hasToken ? '已同步至公司服务器' : '未检测到出厂配置，仅本地保存');
+      if (name.isEmpty) {
+        _status = hasToken ? '尚未填写门店名称' : '未检测到出厂配置';
+      } else if (!hasToken) {
+        _status = '未检测到出厂配置，仅本地保存';
+      } else if (state == null) {
+        _status = '门店名已保存，等待同步';
+      } else if (state['ok'] == true) {
+        _status = '已同步至公司服务器';
+      } else {
+        // 后台调度器会继续重试，失败不影响门店机使用
+        _status = '同步待重试（稍后自动完成）';
+      }
     });
   }
 

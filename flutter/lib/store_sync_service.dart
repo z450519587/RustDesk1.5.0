@@ -16,6 +16,16 @@ import 'package:flutter_hbb/store_config_service.dart';
 /// （store_config.json），读取与轮换都无需重新编译客户端。
 /// 详见 StoreConfigService 的分层配置说明。
 class StoreSyncService {
+  /// 等待设备在服务端「设备管理」里出现（拿到 peer 的 row_id）的最长时长。
+  ///
+  /// 服务端是收到 sysinfo 上报才建 peer 记录的，而 sysinfo 由客户端心跳
+  /// 驱动（15 秒一轮，内容有变化才上传，上传间隔上限 120 秒）。所以首次
+  /// 装机时服务端要过一会儿才认得这台设备 —— 查一次就放弃会必然失败。
+  static const Duration peerWaitTimeout = Duration(minutes: 5);
+
+  /// 轮询 peer 上线的间隔
+  static const Duration peerWaitInterval = Duration(seconds: 5);
+
   /// 从分层配置读取同步所需字段。
   ///
   /// 出厂配置（随包分发，含 adminToken）的定位由 StoreConfigService 负责，
@@ -64,7 +74,19 @@ class StoreSyncService {
 
   /// 同步门店名称到服务器。
   /// 返回 {success, peer, addressBook, peerAlias, addressBookAlias, error}。
-  static Future<Map<String, dynamic>> syncStoreName(String storeName) async {
+  ///
+  /// ## 为什么要有等待
+  ///
+  /// 首次装机时用户填完门店名点保存，往往只过去几秒 —— 此时客户端还没完成
+  /// 首次 sysinfo 上报，服务端的设备管理里查不到本机，**写入必然失败**，
+  /// 而且失败后再没有人重试。这就是「填了名字却没进通讯录」的直接原因。
+  ///
+  /// 所以这里不是查一次就放弃，而是**轮询等待** peer 出现，最多等
+  /// [waitTimeout]。等不到才把状态记为待补，由后台调度器接着做。
+  static Future<Map<String, dynamic>> syncStoreName(
+    String storeName, {
+    Duration waitTimeout = peerWaitTimeout,
+  }) async {
     final result = <String, dynamic>{
       'success': false,
       'peer': false,
@@ -106,21 +128,15 @@ class StoreSyncService {
       client.badCertificateCallback = (cert, host, port) => true;
       try {
         // ---------- 1) 设备管理别名 ----------
-        final listReq = await client.getUrl(Uri.parse('$base/api/admin/peer/list?id=$rid'));
-        listReq.headers.set('api-token', adminToken);
-        listReq.headers.set('Accept', 'application/json');
-        final listResp = await listReq.close();
-        final listBody = await listResp.transform(utf8.decoder).join();
-        int? peerRowId;
-        if (listResp.statusCode == 200) {
-          final j = jsonDecode(listBody);
-          for (final e in _extractList(j['data'])) {
-            if (e is Map && '${e['id']}' == rid) {
-              peerRowId = _toInt(e['row_id']);
-              break;
-            }
-          }
-        }
+        // 先查；查不到就等一会儿再查 —— 首次装机时服务端还没建本机记录，
+        // 查一次就放弃会让这次同步必然失败。
+        final peerRowId = await _waitForPeerRowId(
+          client: client,
+          base: base,
+          adminToken: adminToken,
+          rid: rid,
+          timeout: waitTimeout,
+        );
         if (peerRowId != null && peerRowId > 0) {
           final updReq = await client.postUrl(Uri.parse('$base/api/admin/peer/update'));
           // 显式 charset=utf-8，且 body 用 utf8 编码字节发送
@@ -135,7 +151,8 @@ class StoreSyncService {
           await updResp.drain<void>();
           result['peer'] = updResp.statusCode == 200;
         } else {
-          result['error'] = '设备管理里找不到本机 ID（确认客户端已连上 API 服务器）';
+          result['error'] =
+              '设备管理里还没有本机记录（客户端尚未完成上线登记），稍后会自动重试';
         }
 
         // ---------- 2) 共享通讯簿别名 ----------
@@ -200,6 +217,168 @@ class StoreSyncService {
       result['error'] = e.toString();
     }
     return result;
+  }
+
+  /// 轮询等待本机在服务端「设备管理」里出现，返回它的 row_id。
+  ///
+  /// 服务端是收到 sysinfo 上报才建 peer 记录的，而 sysinfo 由客户端心跳驱动
+  /// （15 秒一轮，内容有变化才上传，上传间隔上限 120 秒）。首次装机时，
+  /// 用户点保存往往只过去几秒，服务端还认不得这台设备 —— 查一次就放弃会让
+  /// 这次同步必然失败，之后再无重试。
+  ///
+  /// 所以这里按 [peerWaitInterval] 轮询，直到 [timeout] 用尽。
+  /// 等不到返回 null，由调用方把状态记为待补。
+  static Future<int?> _waitForPeerRowId({
+    required HttpClient client,
+    required String base,
+    required String adminToken,
+    required String rid,
+    required Duration timeout,
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (true) {
+      final rowId = await _findPeerRowId(client, base, adminToken, rid);
+      if (rowId != null && rowId > 0) {
+        return rowId;
+      }
+      if (!DateTime.now().isBefore(deadline)) {
+        return null;
+      }
+      await Future.delayed(peerWaitInterval);
+    }
+  }
+
+  /// 在设备管理里查本机的 row_id；查不到返回 null。
+  static Future<int?> _findPeerRowId(
+      HttpClient client, String base, String adminToken, String rid) async {
+    try {
+      final req =
+          await client.getUrl(Uri.parse('$base/api/admin/peer/list?id=$rid'));
+      req.headers.set('api-token', adminToken);
+      req.headers.set('Accept', 'application/json');
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode != 200) return null;
+      final j = jsonDecode(body);
+      for (final e in _extractList(j['data'])) {
+        if (e is Map && '${e['id']}' == rid) {
+          return _toInt(e['row_id']);
+        }
+      }
+    } catch (e) {
+      debugPrint('[store_sync] 查询设备管理失败: $e');
+    }
+    return null;
+  }
+
+  /// 查通讯录里本机条目的 row_id
+  static Future<int?> _findAbRowId(HttpClient client, String base,
+      String adminToken, String rid, int? userId, int? collectionId) async {
+    try {
+      final req = await client.getUrl(Uri.parse(
+          '$base/api/admin/address_book/list?user_id=$userId&collection_id=$collectionId&id=$rid'));
+      req.headers.set('api-token', adminToken);
+      req.headers.set('Accept', 'application/json');
+      final resp = await req.close();
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode != 200) return null;
+      final j = jsonDecode(body);
+      for (final e in _extractList(j['data'])) {
+        if (e is Map && '${e['id']}' == rid) {
+          return _toInt(e['row_id']);
+        }
+      }
+    } catch (e) {
+      debugPrint('[store_sync] 查询通讯录失败: $e');
+    }
+    return null;
+  }
+
+  /// POST JSON，返回 HTTP 状态码（0 表示请求失败）。
+  ///
+  /// body 一律转成 UTF-8 字节数组再发送 —— 传字符串时若编码不对，
+  /// 中文会变成问号，服务端就存下 ???XX?。
+  static Future<int> _postJson(HttpClient client, String url,
+      String adminToken, Map<String, dynamic> payload) async {
+    try {
+      final req = await client.postUrl(Uri.parse(url));
+      req.headers.set('Content-Type', 'application/json; charset=utf-8');
+      req.headers.set('api-token', adminToken);
+      req.add(utf8.encode(jsonEncode(payload)));
+      final resp = await req.close();
+      await resp.drain<void>();
+      return resp.statusCode;
+    } catch (e) {
+      debugPrint('[store_sync] POST 失败 $url: $e');
+      return 0;
+    }
+  }
+
+  /// 以门店端本地的名称为准，把服务端被改掉的别名纠正回来。
+  ///
+  /// 门店名是门店自己的属性 —— 服务端被误改（手误、技术员误操作、条目
+  /// 被删后重建导致别名清空）时，门店端应当在下次同步时改回去，而不是
+  /// 默认接受服务端的名字。
+  ///
+  /// 反过来，门店端自己改了名（沂蒙路店 → 沂蒙路二店），也走同一条路径
+  /// 把新名字推上去 —— 「以本地为准」对两个方向是同一条规则。
+  ///
+  /// 返回 true 表示服务端别名已与本地一致（或已成功纠正）。
+  static Future<bool> reconcileAlias(String localName) async {
+    if (localName.trim().isEmpty) return false;
+    try {
+      final cfg = await _loadConfig();
+      final adminToken =
+          (cfg[StoreConfigService.kKeyAdminToken] ?? '').toString().trim();
+      final abUserId = _toInt(cfg[StoreConfigService.kKeyAddressBookUserId]);
+      final abCollectionId =
+          _toInt(cfg[StoreConfigService.kKeyAddressBookCollectionId]);
+      if (adminToken.isEmpty) return false;
+
+      final rid = (await bind.mainGetMyId()).trim();
+      if (rid.isEmpty) return false;
+
+      var base = _normalizeBase((cfg[StoreConfigService.kKeyApiServer] ?? '').toString());
+      if (base.isEmpty) {
+        base = _normalizeBase(await bind.mainGetApiServer());
+      }
+      if (base.isEmpty) return false;
+
+      final client = HttpClient();
+      client.badCertificateCallback = (cert, host, port) => true;
+      try {
+        final serverAlias = await _readAlias(
+            client, base, adminToken, rid, false, abUserId, abCollectionId);
+        if (serverAlias == localName) return true; // 已一致，无需动作
+
+        final abRowId = await _findAbRowId(
+            client, base, adminToken, rid, abUserId, abCollectionId);
+        final payload = <String, dynamic>{
+          'id': rid,
+          'alias': localName,
+          'user_id': abUserId,
+          'collection_id': abCollectionId,
+        };
+        final url = (abRowId != null && abRowId > 0)
+            ? '$base/api/admin/address_book/update'
+            : '$base/api/admin/address_book/create';
+        if (abRowId != null && abRowId > 0) {
+          payload['row_id'] = abRowId;
+        }
+        final code = await _postJson(client, url, adminToken, payload);
+        if (code != 200) {
+          debugPrint('[store_sync] 别名纠正失败 HTTP $code');
+          return false;
+        }
+        debugPrint('[store_sync] 已用本地名称纠正服务端别名: $localName');
+        return true;
+      } finally {
+        client.close();
+      }
+    } catch (e) {
+      debugPrint('[store_sync] 别名纠正异常: $e');
+      return false;
+    }
   }
 
   /// 读回服务端真正存下来的别名，用于校验中文编码。

@@ -16,6 +16,7 @@ import 'package:flutter_hbb/desktop/widgets/store_setup_dialog.dart';
 import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
+import 'package:flutter_hbb/store_sync_scheduler.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/store_config_service.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
@@ -725,6 +726,9 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   void initState() {
     super.initState();
     _checkStoreConfigFirstRun();
+    // 门店名自动同步：启动补偿 + 周期自愈。
+    // 新部署的设备靠这个进入共享通讯录；服务端把名字改错了也靠它纠正回来。
+    StoreSyncScheduler.instance.start();
     _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {      await gFFI.serverModel.fetchID();
       final error = await bind.mainGetError();
       if (systemError != error) {

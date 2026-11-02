@@ -45,6 +45,9 @@ class StoreConfigService {
   static const String kKeyStoreName = 'storeName';
   static const String kKeyConfigured = 'configured';
 
+  /// 同步状态（最近一次同步的结果与时间）
+  static const String kKeySyncState = 'syncState';
+
   /// 内置默认配置（编译进程序，作为最后兜底）
   ///
   /// API 服务器用**公网域名**而不是内网 IP：门店机可能不在公司内网
@@ -280,6 +283,32 @@ class StoreConfigService {
     user[kKeyConfigured] = true;
     _stripManagedKeys(user);
     return await saveUserConfig(user);
+  }
+
+  /// 保存最近一次同步的状态。
+  ///
+  /// 供界面显示「已同步 / 待重试」以及排查用；不影响同步逻辑本身。
+  /// 同步失败不影响任何其他功能，门店机照常可用。
+  static Future<String?> saveSyncState({
+    required bool ok,
+    String error = '',
+  }) async {
+    final user = await loadUserConfig();
+    user[kKeySyncState] = <String, dynamic>{
+      'ok': ok,
+      'error': error,
+      'at': DateTime.now().toIso8601String(),
+    };
+    _stripManagedKeys(user);
+    return await saveUserConfig(user);
+  }
+
+  /// 读取最近一次同步的状态；没有记录时返回 null
+  static Future<Map<String, dynamic>?> loadSyncState() async {
+    final user = await loadUserConfig();
+    final s = user[kKeySyncState];
+    if (s is Map<String, dynamic>) return s;
+    return null;
   }
 
   /// 移除用户配置中「由出厂配置管理、不允许用户覆盖」的字段。

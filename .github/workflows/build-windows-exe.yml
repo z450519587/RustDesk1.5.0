@@ -56,6 +56,7 @@ jobs:
           flutter analyze --no-fatal-infos --no-fatal-warnings \
             lib/store_config_service.dart \
             lib/store_sync_service.dart \
+            lib/store_sync_scheduler.dart \
             lib/desktop/widgets/store_setup_dialog.dart \
             lib/desktop/widgets/store_info_badge.dart \
             lib/desktop/pages/connection_page.dart \
