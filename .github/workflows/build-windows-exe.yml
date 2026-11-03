@@ -250,6 +250,101 @@ jobs:
           # 安装到 Program Files，并支持 --uninstall 卸载。
           mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-install.exe
 
+      - name: Guard the package (install-only + no secrets)
+        shell: bash
+        run: |
+          # 两道守卫，防止交付出「绿色版」或泄露密钥：
+          #
+          # 1) 只允许安装版：产物必须以 -install.exe 结尾。
+          #    RustDesk 依据文件名判定是否走标准安装流程
+          #    （is_setup(): name.to_lowercase().ends_with("install.exe")），
+          #    所以文件名一旦不是 install.exe，双击就变成「解压即用」。
+          # 2) 不含明文密钥：出厂配置里的 adminToken 会随包分发（这是必须的），
+          #    但**仓库里**的任何文件都不得含真实令牌 —— 公开仓库里
+          #    一次明文提交就是一次泄露。
+          set -e
+          PKG="./SignOutput/rustdesk-${{ env.VERSION }}-install.exe"
+          if [ ! -f "$PKG" ]; then
+            echo "::error::package not found: $PKG"
+            exit 1
+          fi
+          case "$(basename "$PKG" | tr 'A-Z' 'a-z')" in
+            *install.exe) echo "package name OK: $(basename "$PKG")" ;;
+            *) echo "::error::the package must end with -install.exe (a differently named file runs as a portable copy)"
+               exit 1 ;;
+          esac
+
+          # 令牌只允许出现在被 gitignore 的本地配置里
+          echo '--- checking tracked files for the admin token ---'
+          TOKEN=""
+          for f in deploy/store_config.json deploy/store_sync.json; do
+            if [ -f "$f" ]; then
+              TOKEN=$(python3 -c "import json,sys;print(json.load(open('$f')).get('adminToken',''))" 2>/dev/null || echo "")
+              [ -n "$TOKEN" ] && break
+            fi
+          done
+          if [ -n "$TOKEN" ]; then
+            if git ls-files -z | xargs -0 grep -l -F "$TOKEN" 2>/dev/null | grep -q .; then
+              echo "::error::the admin token appears in a tracked file -- remove it and rotate the token"
+              exit 1
+            fi
+            echo "no tracked file contains the admin token"
+          else
+            echo "::warning::no admin token found locally; skipping the secret scan"
+          fi
+
+          # 产物里必须带出厂配置，否则门店端拿不到令牌与通讯录 ID
+          echo '--- checking the shipped store config ---'
+          pip3 install brotli --quiet 2>/dev/null || pip3 install brotli --quiet
+          PKG_PATH="$PKG" python3 - <<'PY'
+          import os
+          import sys
+          try:
+              import brotli
+          except ImportError:
+              print('::error::brotli is required to inspect the package')
+              sys.exit(1)
+
+          LENGTH = 4
+          IDENT = b'rustdesk'
+
+          pkg = os.environ['PKG_PATH']
+          data = open(pkg, 'rb').read()
+          found = False
+          idx = 0
+          while True:
+              idx = data.find(IDENT, idx)
+              if idx < 0:
+                  break
+              pos = idx + len(IDENT)
+              ok = True
+              files = []
+              try:
+                  while True:
+                      if data[pos:pos + len(IDENT)] == IDENT:
+                          pos += len(IDENT)
+                          break
+                      plen = int.from_bytes(data[pos:pos + LENGTH], 'big'); pos += LENGTH
+                      path = data[pos:pos + plen].decode('utf-8', 'replace'); pos += plen
+                      dlen = int.from_bytes(data[pos:pos + LENGTH], 'big'); pos += LENGTH
+                      blob = data[pos:pos + dlen]; pos += dlen
+                      pos += 32
+                      files.append((path, brotli.decompress(blob)))
+              except Exception:
+                  ok = False
+              if ok:
+                  for p, content in files:
+                      if p.lower().endswith('store_config.json'):
+                          print('store_config.json in package:')
+                          print(content.decode('utf-8', 'replace'))
+                          found = True
+                          break
+              idx += 1
+          if not found:
+              print('::error::store_config.json is missing from the package')
+              sys.exit(1)
+          PY
+
       - name: Upload Windows EXE
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
