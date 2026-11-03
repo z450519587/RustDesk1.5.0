@@ -138,8 +138,37 @@ pub fn core_main() -> Option<CoreMainAction> {
         args.push("--install".to_owned());
         flutter_args.push("--install".to_string());
     }
+    // `--noinstall` 有两种来路，必须区别对待：
+    //
+    //   a) 用户直接跑 `--noinstall`（或点安装页的「不安装直接运行」）
+    //      —— 这是想要一个绿色版：不清参数，直接运行，不装服务不写注册表。
+    //   b) 安装过程内部的提权重启：`--noinstall --elevate` /
+    //      `--noinstall --run-as-system`（见 platform::windows::elevate_or_run_as_system）。
+    //      这里的 `--noinstall` 只是「别再弹安装向导」，提权时必须原样放行。
+    //
+    // 定制版只允许安装方式运行，所以 (a) 被改写成 `--install`：
+    // 命令行也堵不住「不安装直接运行」这条路。
     if args.contains(&"--noinstall".to_string()) {
-        args.clear();
+        let is_elevate_handoff = args.iter().any(|a| {
+            a == "--elevate" || a == "--run-as-system"
+        });
+        if is_elevate_handoff {
+            // (b) 安装内部的提权重启：清参数后继续，与上游行为一致。
+            args.clear();
+        } else if hbb_common::config::APP_BRAND_NAME != "RustDesk" {
+            // (a) 定制包：强制走安装流程，而不是静默变成绿色版。
+            log::error!(
+                "--noinstall is not supported in the custom build; \
+                 forcing the installation flow instead"
+            );
+            args.retain(|arg| arg != "--noinstall");
+            if !args.contains(&"--install".to_string()) {
+                args.push("--install".to_owned());
+                flutter_args.push("--install".to_string());
+            }
+        } else {
+            args.clear();
+        }
     }
     // The portable wrapper injects `--install` when its name ends with `install.exe`,
     // including `no-install.exe`. Drop the argument instead of exiting so disabled
