@@ -19,6 +19,10 @@ const APP_METADATA_CONFIG: &str = "meta.toml";
 const META_LINE_PREFIX_TIMESTAMP: &str = "timestamp = ";
 const META_LINE_PREFIX_FILE: &str = "file = ";
 const APP_PREFIX: &str = "rustdesk";
+// 定制包（门店版）的标记文件：随安装包分发的出厂配置。
+// 存在即说明这是定制包 —— 判定不依赖 exe 文件名，所以用户把安装包改名后
+// 依然会走安装流程，不会凭空多出一个「绿色版」。
+const CUSTOM_PACKAGE_MARKER: &str = "store_config.json";
 #[cfg(windows)]
 const VERIFIED_UPDATE_FILE_PREFIX: &str = "rustdesk-verified-";
 const APPNAME_RUNTIME_ENV_KEY: &str = "RUSTDESK_APPNAME";
@@ -283,7 +287,19 @@ fn main() -> Result<(), String> {
         }
         i += 1;
     }
-    let click_setup = args.is_empty() && arg_exe.to_lowercase().ends_with("install.exe");
+    let mut ui = false;
+    let reader = BinaryReader::new()?;
+    // 定制包必须走安装流程，与 exe 文件名无关。
+    //
+    // 上游只看文件名是否以 `install.exe` 结尾 —— 文件名是用户可见、可随意
+    // 改的，把安装包改名成 `rustdesk.exe` 判定就失效了，程序直接解压即用，
+    // 等于凭空多出一个「绿色版」。定制包用 payload 里的标记文件来认。
+    let is_custom_package = reader
+        .files
+        .iter()
+        .any(|f| normalize_path(&f.path).ends_with(CUSTOM_PACKAGE_MARKER));
+    let click_setup = args.is_empty()
+        && (is_custom_package || arg_exe.to_lowercase().ends_with("install.exe"));
     #[cfg(windows)]
     let quick_support = args.is_empty() && win::is_quick_support_exe(&arg_exe);
     #[cfg(not(windows))]
@@ -296,8 +312,6 @@ fn main() -> Result<(), String> {
         }
     }
 
-    let mut ui = false;
-    let reader = BinaryReader::new()?;
     if let Some(exe) = setup(
         reader,
         None,
