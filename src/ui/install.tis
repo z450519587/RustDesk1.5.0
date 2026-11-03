@@ -20,22 +20,21 @@ class Install: Reactor.Component {
             <div>{translate('agreement_tip')}</div>
             <div style="height: 1px; background: gray; margin-top: 1em" />
             <div style="text-align: right;">
-                <progress style={"color:" + color} style="display: none" /> 
+                <progress style={"color:" + color} style="display: none" />
                 <button .button id="cancel" .outline style="margin-right: 2em;">{translate('Cancel')}</button>
                 <button .button id="submit">{translate('Accept and Install')}</button>
-                {handler.show_run_without_install() && <button .button #run-without-install .outline style="margin-left: 2em;">
-                    {translate('Run without install')}
-                </button>}
+                {/*
+                  门店定制版只允许安装方式运行，不提供「不安装直接运行」入口。
+                  上游这里有个「Run without install」按钮，点了会以 --noinstall
+                  启动 —— 那就是一个不写注册表、不建快捷方式、不装服务的
+                  「绿色版」。定制版把这个入口去掉，避免出现第二种运行方式。
+                */}
             </div>
         </div>;
     }
 
     event click $(#cancel) {
         view.close();
-    }
-
-    event click $(#run-without-install) {
-        handler.run_without_install();
     }
 
     event click $(#path) {
