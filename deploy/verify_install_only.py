@@ -36,6 +36,19 @@ def packer_click_setup(arg_exe, files, args):
     return is_custom_package(files) or arg_exe.lower().endswith("install.exe")
 
 
+def packer_quick_support(arg_exe, files, args):
+    """libs/portable/src/main.rs -- quick_support.
+
+    A 'quick support' launch skips the installation too (it starts with
+    --quick_support instead of --install), so it is closed for custom
+    packages.
+    """
+    if args or is_custom_package(files):
+        return False
+    exe = arg_exe.lower()
+    return "-qs-" in exe or "-qs.exe" in exe or "_qs.exe" in exe
+
+
 def is_setup(name, disable_installation=False, brand=APP_BRAND_NAME):
     """src/common.rs -- is_setup().
 
@@ -123,12 +136,23 @@ check('上游包：--noinstall 仍清参数（保持原行为）',
 check('无关参数不受影响',
       resolve_noinstall(['--tray'], True), ['--tray'])
 
-print('\n=== 4. 端到端：改名后的安装包仍会安装 ===')
+print('\n=== 4. 快速支持模式（quick_support）也是一条免安装路径 ===')
+check('定制包 改名 xxx-qs.exe 不走 quick_support',
+      packer_quick_support('xxx-qs.exe', CUSTOM_FILES, []), False)
+check('定制包 改名 rustdesk_qs.exe 不走 quick_support',
+      packer_quick_support('rustdesk_qs.exe', CUSTOM_FILES, []), False)
+check('上游包 -qs- 仍走 quick_support（保持原行为）',
+      packer_quick_support('xxx-qs.exe', STOCK_FILES, []), True)
+
+print('\n=== 5. 端到端：改名后的安装包仍会安装 ===')
 # 改名 -> 打包器判定安装 -> 传入 --install -> 主程序认安装 -> 执行安装
-for name in ['rustdesk-1.5.1-install.exe', 'rustdesk.exe', '仁和堂远程工具.exe']:
+for name in ['rustdesk-1.5.1-install.exe', 'rustdesk.exe', '仁和堂远程工具.exe',
+             'xxx-qs.exe', 'setup_qs.exe']:
     installed = packer_click_setup(name, CUSTOM_FILES, [])
+    qs = packer_quick_support(name, CUSTOM_FILES, [])
     passes_install = is_setup('rustdesk.exe') if installed else False
-    check(f'{name} -> 走安装流程', installed and passes_install, True)
+    check(f'{name} -> 走安装流程（非 quick_support）',
+          installed and passes_install and not qs, True)
 
 print()
 if fails:
