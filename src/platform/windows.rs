@@ -1812,7 +1812,63 @@ copy /Y \"{tmp_path}\\Uninstall {app_name}.lnk\" \"{path}\\\"
     );
     run_cmds(cmds, debug, "install")?;
     run_after_run_cmds(silent);
+    cleanup_portable_extraction_dir();
     Ok(())
+}
+
+/// 安装完成后清掉便携打包器的**解压目录**。
+///
+/// ## 为什么必须清
+///
+/// 门店定制版只允许「安装方式运行」。但打包器（libs/portable）的工作方式是：
+/// 双击安装包 → 先把 payload 解压到 `%LOCALAPPDATA%\<exe名>\` → 再从那里
+/// 启动 `rustdesk.exe --install` → 安装脚本用 XCOPY 把整个目录复制到
+/// Program Files。
+///
+/// 结果是安装完成后**两份都能跑**：Program Files 里一份（正确），
+/// `%LOCALAPPDATA%` 里还有一份完整副本。把那一份拷走就是「绿色版」——
+/// 不写注册表、不建快捷方式、不装服务，卸载项也管不到它。
+///
+/// ## 为什么可以清
+///
+/// - 自动更新在定制版里是**关闭的**（`do_check_software_update` 直接返回），
+///   不依赖这个目录做更新落地。
+/// - 运行时的程序在 Program Files，不依赖解压目录。
+/// - 目录名由 exe 名决定（`app_dir_name`），是 `%LOCALAPPDATA%\rustdesk`。
+///
+/// ## 怎么清
+///
+/// 不能在当前进程里直接删 —— 正在运行的就是那个目录里的 exe。
+/// 所以起一个后台线程，等本进程退出后再删；删不掉也不影响使用
+/// （下次运行安装包时 `setup()` 会因时间戳不匹配而整体清掉重来）。
+fn cleanup_portable_extraction_dir() {
+    // 定制包才需要：上游的便携版要保留这个目录。
+    if hbb_common::config::APP_BRAND_NAME == "RustDesk" {
+        return;
+    }
+    let Ok(local) = dirs::data_local_dir() else {
+        return;
+    };
+    // 解压目录名 = payload 里 exe 的 stem，与打包器 app_dir_name() 同规则。
+    let dir = local.join("rustdesk");
+    if !dir.is_dir() {
+        return;
+    }
+    std::thread::spawn(move || {
+        // 等安装进程退出：它正在从该目录运行，文件被占用时删不掉。
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // 本进程仍持有目录内文件时删不掉，重试即可。
+            if std::fs::remove_dir_all(&dir).is_ok() {
+                log::info!("removed the portable extraction dir: {}", dir.display());
+                return;
+            }
+        }
+        log::warn!(
+            "could not remove the portable extraction dir: {}",
+            dir.display()
+        );
+    });
 }
 
 pub fn run_after_install() -> ResultType<()> {
