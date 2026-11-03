@@ -1177,17 +1177,26 @@ pub fn get_full_name() -> String {
 
 /// 判断当前进程是否应当走**标准安装流程**。
 ///
-/// 原本只看文件名是否以 `install.exe` 结尾。问题是：文件名是用户可见、可随意
-/// 改的 —— 把 `rustdesk-1.5.1-install.exe` 改名成 `rustdesk.exe`，判定就失效了，
-/// 程序直接解压即用，等于凭空多出一个「绿色版」。
+/// ## 这个函数回答的是「我现在是不是安装向导」
 ///
-/// 本项目是门店定制版，**只允许安装方式运行**，所以判定改为两条满足其一：
-/// 1. 文件名以 `install.exe` 结尾（上游行为，保留给通用构建）；
-/// 2. 这是定制包（品牌名不是上游的 "RustDesk"）—— 定制包一律走安装流程，
-///    与文件名无关。
+/// 不是「这是不是定制包」。两者混在一起会出大问题：定制包一旦恒为真，
+/// **已安装后的程序每次启动都会被当成安装向导**（安装后的 exe 名是
+/// `Program Files\RustDesk\RustDesk.exe`，不含 `install.exe`，
+/// 但恒真判定会让它自动带上 `--install`，于是反复弹安装向导）。
 ///
-/// 品牌名取自编译期常量 `APP_BRAND_NAME`，不能改用运行期的 `APP_NAME`：
-/// 后者可被配置项覆盖，用它判定会让「改配置就能变绿色版」。
+/// ## 判据
+///
+/// 1. 文件名以 `install.exe` 结尾 —— 上游行为，保留给通用构建；
+/// 2. **进程运行在打包器的解压目录里** —— 该目录下有打包器写的 `meta.toml`。
+///    定制包被改名（`rustdesk-1.5.1-install.exe` → `rustdesk.exe`）后，
+///    打包器仍会识别出它是定制包并以 `--install` 启动解压出来的程序；
+///    而「已安装的程序」跑在 Program Files 下，没有 `meta.toml`。
+///
+/// 判据 2 用的是**文件系统事实**而不是文件名或品牌名 —— 文件名用户可改，
+/// 品牌名虽好但无法区分「安装包」与「已安装的程序」。
+///
+/// 定制包的品牌常量 `APP_BRAND_NAME` 另有用途：判定是否提供「不安装直接
+/// 运行」入口（见 `ui_interface::show_run_without_install`）。
 pub fn is_setup(name: &str) -> bool {
     if config::is_disable_installation() {
         return false;
@@ -1195,8 +1204,27 @@ pub fn is_setup(name: &str) -> bool {
     if name.to_lowercase().ends_with("install.exe") {
         return true;
     }
-    // 定制包：文件名不可靠，但品牌是编译期定死的 —— 始终走安装流程。
-    hbb_common::config::APP_BRAND_NAME != "RustDesk"
+    // meta.toml 判据只对定制包启用 —— 上游的通用构建保持原样（只看文件名），
+    // 避免改变它的行为。
+    if hbb_common::config::APP_BRAND_NAME == "RustDesk" {
+        return false;
+    }
+    is_running_from_extraction_dir()
+}
+
+/// 当前进程是否运行在打包器的解压目录里。
+///
+/// 打包器（libs/portable）把 payload 解压到一个目录，并在那里写一份
+/// `meta.toml`（记录打包时间戳与文件清单），然后从该目录启动程序。
+/// 已安装的程序跑在 Program Files 下，没有这个文件。
+fn is_running_from_extraction_dir() -> bool {
+    let Ok(current_exe) = std::env::current_exe() else {
+        return false;
+    };
+    match current_exe.parent() {
+        Some(dir) => dir.join("meta.toml").is_file(),
+        None => false,
+    }
 }
 
 pub fn get_custom_rendezvous_server(custom: String) -> String {
