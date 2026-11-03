@@ -1838,37 +1838,56 @@ copy /Y \"{tmp_path}\\Uninstall {app_name}.lnk\" \"{path}\\\"
 ///
 /// ## 怎么清
 ///
-/// 不能在当前进程里直接删 —— 正在运行的就是那个目录里的 exe。
-/// 所以起一个后台线程，等本进程退出后再删；删不掉也不影响使用
-/// （下次运行安装包时 `setup()` 会因时间戳不匹配而整体清掉重来）。
+/// 必须由**独立进程**执行：调用 `install_me` 的那个进程在函数返回后立刻
+/// `std::process::exit(0)`，同进程的后台线程会被一起杀掉，什么都做不了。
+///
+/// 所以这里起一个独立的 cmd：先等几秒让安装进程退出，再删。
+/// 删不掉也不影响使用 —— 下次运行安装包时打包器的 `setup()` 会因时间戳
+/// 不匹配而整体清掉重来。
 fn cleanup_portable_extraction_dir() {
     // 定制包才需要：上游的便携版要保留这个目录。
     if hbb_common::config::APP_BRAND_NAME == "RustDesk" {
         return;
     }
-    let Ok(local) = dirs::data_local_dir() else {
+    // 直接用当前 exe 所在目录 —— 它**就是**打包器的解压目录。
+    //
+    // 打包器（libs/portable）的做法是：把 payload 解压到
+    // `dirs::data_local_dir()/<exe stem>/`，再从那里启动 `rustdesk.exe --install`。
+    // 所以安装进程运行时 current_exe 的父目录就是那个解压目录，
+    // 不必再去推导 %LOCALAPPDATA% —— 推导反而可能与打包器算出的路径不一致。
+    let Ok(current_exe) = std::env::current_exe() else {
         return;
     };
-    // 解压目录名 = payload 里 exe 的 stem，与打包器 app_dir_name() 同规则。
-    let dir = local.join("rustdesk");
-    if !dir.is_dir() {
+    let Some(dir) = current_exe.parent().map(|p| p.to_path_buf()) else {
+        return;
+    };
+    // 只清理看起来像解压目录的路径：里面有 meta.toml（打包器写的元数据）。
+    // 这样即便 current_exe 因异常原因指向别处，也不会误删无关目录。
+    if !dir.join("meta.toml").is_file() {
         return;
     }
-    std::thread::spawn(move || {
-        // 等安装进程退出：它正在从该目录运行，文件被占用时删不掉。
-        for _ in 0..60 {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            // 本进程仍持有目录内文件时删不掉，重试即可。
-            if std::fs::remove_dir_all(&dir).is_ok() {
-                log::info!("removed the portable extraction dir: {}", dir.display());
-                return;
-            }
-        }
-        log::warn!(
-            "could not remove the portable extraction dir: {}",
-            dir.display()
-        );
-    });
+    // 路径要进 cmd 命令行，先按项目既有的规则做安全校验
+    // （installer_shell::validate_install_value：拒绝引号、% 等 cmd 特殊字符）。
+    let target = dir.to_string_lossy().to_string();
+    if let Err(e) = validate_install_value(&target) {
+        log::warn!("skip the extraction dir cleanup: {}", e);
+        return;
+    }
+    log::info!("cleaning the portable extraction dir: {}", dir.display());
+
+    // 独立进程：等安装进程退出（文件被占用时删不掉），然后删掉整个目录。
+    // 路径里有空格/中文，用 cmd 的引号转义；`rd /s /q` 删目录树。
+    // `ping -n 2 127.0.0.1` 是 cmd 里惯用的「等一秒」写法。
+    let script = format!(
+        "for /l %i in (1,1,60) do (ping -n 2 127.0.0.1 >nul & rmdir /s /q \"{}\" 2>nul & if not exist \"{}\" exit /b 0)",
+        target, target
+    );
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", &script])
+        // 不能让 cmd 的当前目录就是解压目录 —— 进程无法删除自己所在的目录。
+        .current_dir(std::env::temp_dir())
+        .creation_flags(winapi::um::winbase::CREATE_NO_WINDOW)
+        .spawn();
 }
 
 pub fn run_after_install() -> ResultType<()> {
