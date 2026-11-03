@@ -95,7 +95,20 @@ pub fn is_setup(name: &str, disable_installation: bool) -> bool {
     if name.to_lowercase().ends_with("install.exe") {
         return true;
     }
-    APP_BRAND_NAME != "RustDesk"
+    if APP_BRAND_NAME == "RustDesk" {
+        return false;
+    }
+    is_running_from_extraction_dir()
+}
+
+fn is_running_from_extraction_dir() -> bool {
+    let Ok(current_exe) = std::env::current_exe() else {
+        return false;
+    };
+    match current_exe.parent() {
+        Some(dir) => dir.join("meta.toml").is_file(),
+        None => false,
+    }
 }
 
 const APP_BRAND_NAME: &str = "仁和堂专用远程工具";
