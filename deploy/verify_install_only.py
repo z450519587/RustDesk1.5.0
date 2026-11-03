@@ -49,17 +49,27 @@ def packer_quick_support(arg_exe, files, args):
     return "-qs-" in exe or "-qs.exe" in exe or "_qs.exe" in exe
 
 
-def is_setup(name, disable_installation=False, brand=APP_BRAND_NAME):
+def is_setup(name, disable_installation=False, in_extraction_dir=False,
+             brand=APP_BRAND_NAME):
     """src/common.rs -- is_setup().
 
-    `brand` is the compile-time APP_BRAND_NAME: the store build compiles it
-    as the custom name, a stock upstream build compiles it as "RustDesk".
+    `in_extraction_dir` means the process runs from the packer's
+    extraction directory (the one holding meta.toml), which is how the
+    installer tells "I am the installer" apart from "I am the installed
+    program". Without it the installed program would look like an
+    installer on every start and pop the wizard again.
+
+    `brand` is the compile-time APP_BRAND_NAME: the meta.toml check is
+    only enabled for the custom build, so upstream keeps its original
+    filename-only behaviour.
     """
     if disable_installation:
         return False
     if name.lower().endswith("install.exe"):
         return True
-    return brand != "RustDesk"
+    if brand == "RustDesk":
+        return False
+    return in_extraction_dir
 
 
 def resolve_noinstall(args, is_custom):
@@ -110,17 +120,23 @@ check('上游包（无标记文件）仍按文件名判定',
 check('上游包 install.exe 走安装',
       packer_click_setup('rustdesk-install.exe', STOCK_FILES, []), True)
 
-print('\n=== 2. is_setup()：定制包恒为真 ===')
-check('定制包 改名后仍认安装',
-      is_setup('rustdesk.exe'), True)
-check('定制包 原名也认安装',
+print('\n=== 2. is_setup()：区分「安装向导」与「已安装的程序」===')
+check('定制包：从解压目录启动（安装向导）认安装',
+      is_setup('rustdesk.exe', in_extraction_dir=True), True)
+check('定制包：已安装的程序（Program Files，无 meta.toml）不认安装',
+      is_setup('RustDesk.exe'), False)
+check('定制包：文件名带 install.exe 也认安装',
       is_setup('rustdesk-1.5.1-install.exe'), True)
-check('上游包 普通名不认安装（上游编译时 brand=RustDesk）',
-      is_setup('rustdesk.exe', brand='RustDesk'), False)
+check('上游包 普通名不认安装',
+      is_setup('rustdesk.exe'), False)
 check('上游包 install.exe 走安装',
-      is_setup('rustdesk-install.exe', brand='RustDesk'), True)
+      is_setup('rustdesk-install.exe'), True)
+check('上游包 从解压目录启动也不认安装（保持上游原行为）',
+      is_setup('rustdesk.exe', in_extraction_dir=True, brand='RustDesk'), False)
 check('显式禁用安装时不认（上游开关仍生效）',
       is_setup('rustdesk.exe', disable_installation=True), False)
+check('显式禁用安装时 解压目录也不认',
+      is_setup('rustdesk.exe', disable_installation=True, in_extraction_dir=True), False)
 
 print('\n=== 3. --noinstall 参数处理 ===')
 check('定制包：单独 --noinstall 被改写成 --install',
@@ -150,9 +166,33 @@ for name in ['rustdesk-1.5.1-install.exe', 'rustdesk.exe', '仁和堂远程工�
              'xxx-qs.exe', 'setup_qs.exe']:
     installed = packer_click_setup(name, CUSTOM_FILES, [])
     qs = packer_quick_support(name, CUSTOM_FILES, [])
-    passes_install = is_setup('rustdesk.exe') if installed else False
+    passes_install = is_setup('rustdesk.exe', in_extraction_dir=True) if installed else False
     check(f'{name} -> 走安装流程（非 quick_support）',
           installed and passes_install and not qs, True)
+
+print('\n=== 6. 回归：装完之后启动程序，不该再弹安装向导 ===')
+# 装完后 run_after_run_cmds 会无参数启动 Program Files 里的 exe。
+# 那次启动的 exe 位于 Program Files，没有 meta.toml ->
+# is_setup 必须为 false，否则又会自动带上 --install 反复弹向导。
+INSTALLED_EXE = r'C:\Program Files\RustDesk\RustDesk.exe'
+check('已安装的程序（无参数启动）不认安装',
+      is_setup(INSTALLED_EXE, in_extraction_dir=False), False)
+
+# 主程序里的 click_setup = args.is_empty() && is_setup(arg_exe)
+def click_setup_in_main(exe_path, args, in_extraction_dir):
+    if args:
+        return False
+    return is_setup(exe_path, in_extraction_dir=in_extraction_dir)
+
+
+check('装完启动（无参数）-> 不加 --install -> 不再弹向导',
+      click_setup_in_main(INSTALLED_EXE, [], False), False)
+check('安装向导进程（--install 参数）-> 正常走安装',
+      click_setup_in_main(r'%LOCALAPPDATA%\rustdesk\rustdesk.exe', ['--install'], True), False)
+check('双击安装包解压后启动（无参数但在解压目录）-> 加 --install',
+      click_setup_in_main(r'%LOCALAPPDATA%\rustdesk\rustdesk.exe', [], True), True)
+check('托盘启动（--tray 参数）-> 不加 --install',
+      click_setup_in_main(INSTALLED_EXE, ['--tray'], False), False)
 
 print()
 if fails:
