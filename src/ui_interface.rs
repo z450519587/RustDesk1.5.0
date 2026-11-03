@@ -119,14 +119,33 @@ pub fn update_me(_path: String) {
     goto_install();
 }
 
+/// 定制版**不提供**「不安装直接运行」的入口。
+///
+/// 上游这里会启动一个带 `--noinstall` 的实例 —— 那就是一个不写注册表、
+/// 不建快捷方式、不装服务的「绿色版」。门店定制版只允许安装方式运行，
+/// 所以这个入口对定制包关闭（判定用编译期常量 `APP_BRAND_NAME`，
+/// 不能用运行期的 `APP_NAME`，那个可被配置覆盖）。
 #[inline]
 pub fn run_without_install() {
+    // 定制包：拒绝以绿色版方式启动。明确失败而不是静默运行 ——
+    // 静默运行的话，调用方（安装页）会以为成功了。
+    if hbb_common::config::APP_BRAND_NAME != "RustDesk" {
+        log::error!(
+            "run_without_install is not available in the custom build; \
+             this client only runs in installed mode"
+        );
+        return;
+    }
     crate::run_me(vec!["--noinstall"]).ok();
     std::process::exit(0);
 }
 
 #[inline]
 pub fn show_run_without_install() -> bool {
+    // 定制包不显示「不安装直接运行」按钮。
+    if hbb_common::config::APP_BRAND_NAME != "RustDesk" {
+        return false;
+    }
     let mut it = std::env::args();
     if let Some(tmp) = it.next() {
         if crate::is_setup(&tmp) {
