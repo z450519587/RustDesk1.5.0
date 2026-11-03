@@ -1175,8 +1175,28 @@ pub fn get_full_name() -> String {
     )
 }
 
+/// 判断当前进程是否应当走**标准安装流程**。
+///
+/// 原本只看文件名是否以 `install.exe` 结尾。问题是：文件名是用户可见、可随意
+/// 改的 —— 把 `rustdesk-1.5.1-install.exe` 改名成 `rustdesk.exe`，判定就失效了，
+/// 程序直接解压即用，等于凭空多出一个「绿色版」。
+///
+/// 本项目是门店定制版，**只允许安装方式运行**，所以判定改为两条满足其一：
+/// 1. 文件名以 `install.exe` 结尾（上游行为，保留给通用构建）；
+/// 2. 这是定制包（品牌名不是上游的 "RustDesk"）—— 定制包一律走安装流程，
+///    与文件名无关。
+///
+/// 品牌名取自编译期常量 `APP_BRAND_NAME`，不能改用运行期的 `APP_NAME`：
+/// 后者可被配置项覆盖，用它判定会让「改配置就能变绿色版」。
 pub fn is_setup(name: &str) -> bool {
-    !config::is_disable_installation() && name.to_lowercase().ends_with("install.exe")
+    if config::is_disable_installation() {
+        return false;
+    }
+    if name.to_lowercase().ends_with("install.exe") {
+        return true;
+    }
+    // 定制包：文件名不可靠，但品牌是编译期定死的 —— 始终走安装流程。
+    hbb_common::config::APP_BRAND_NAME != "RustDesk"
 }
 
 pub fn get_custom_rendezvous_server(custom: String) -> String {
