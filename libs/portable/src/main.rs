@@ -300,8 +300,13 @@ fn main() -> Result<(), String> {
         .any(|f| normalize_path(&f.path).ends_with(CUSTOM_PACKAGE_MARKER));
     let click_setup = args.is_empty()
         && (is_custom_package || arg_exe.to_lowercase().ends_with("install.exe"));
+    // 「快速支持」模式（文件名含 -qs-）也是一种不安装直接运行的路径：
+    // 它会把启动参数换成 `--quick_support` 而不是 `--install`。
+    // 定制包只允许安装方式运行，所以这个模式对定制包关闭 ——
+    // 否则把安装包改名成 xxx-qs.exe 就能绕过安装向导。
     #[cfg(windows)]
-    let quick_support = args.is_empty() && win::is_quick_support_exe(&arg_exe);
+    let quick_support =
+        !is_custom_package && args.is_empty() && win::is_quick_support_exe(&arg_exe);
     #[cfg(not(windows))]
     let quick_support = false;
 
