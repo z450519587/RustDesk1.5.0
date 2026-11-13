@@ -69,3 +69,4 @@ deploy/store_config.json
 
 # 临时 CI 监控脚本，不入库
 _mon*.py
+_watch.py
