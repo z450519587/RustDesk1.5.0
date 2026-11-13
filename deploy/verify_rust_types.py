@@ -114,6 +114,98 @@ fn is_running_from_extraction_dir() -> bool {
 const APP_BRAND_NAME: &str = "仁和堂专用远程工具";
 ''',
 
+    # src/platform/windows.rs -- the install guard, the payload check and
+    # the post-install launch
+    'install_flow': r'''
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+fn install_me(options: &str, path: String, silent: bool, debug: bool) -> Result<(), String> {
+    static INSTALL_RUNNING: AtomicBool = AtomicBool::new(false);
+    if INSTALL_RUNNING.swap(true, Ordering::SeqCst) {
+        return Err("Another installation is already running".to_string());
+    }
+    struct InstallGuard;
+    impl Drop for InstallGuard {
+        fn drop(&mut self) {
+            INSTALL_RUNNING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _install_guard = InstallGuard;
+    let _ = (options, path, silent, debug);
+    Ok(())
+}
+
+fn verify_installed_payload(path: &str) {
+    let required = ["data\\app.so", "librustdesk.dll", "rustdesk.exe"];
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|rel| !Path::new(path).join(rel).is_file())
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let Ok(current_exe) = std::env::current_exe() else { return; };
+    let Some(src) = current_exe.parent() else { return; };
+    if !src.join("data\\app.so").is_file() {
+        return;
+    }
+    let script = format!(
+        "robocopy \"{}\" \"{}\" /E /IS /IT /NFL /NDL /NJH /NJS /NP /R:1 /W:1",
+        src.to_string_lossy(),
+        path
+    );
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", &script])
+        .status();
+}
+
+fn run_after_run_cmds(silent: bool) {
+    let exe = "C:\\Program Files\\RustDesk\\RustDesk.exe".to_owned();
+    if !silent {
+        let main_exe = exe.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if !std::path::Path::new(&main_exe).is_file() {
+                return;
+            }
+            match std::process::Command::new(&main_exe).spawn() {
+                Ok(_) => {}
+                Err(e) => { let _ = e; }
+            }
+        });
+    }
+    let _ = std::process::Command::new(&exe).arg("--tray").spawn();
+}
+''',
+
+    # libs/portable/src/main.rs -- do not wipe the extraction directory
+    # while an installation is reading from it
+    'extraction_busy_check': r'''
+use std::path::Path;
+
+fn extraction_dir_is_busy(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    for attempt in 0..3 {
+        let probe = dir.with_extension(format!("busycheck{attempt}"));
+        let _ = std::fs::remove_dir_all(&probe);
+        match std::fs::rename(dir, &probe) {
+            Ok(()) => {
+                let _ = std::fs::rename(&probe, dir);
+                return false;
+            }
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    }
+    true
+}
+''',
+
     # libs/portable/src/main.rs -- custom package detection
     'packer_detection': r'''
 struct BinaryData { path: String }
