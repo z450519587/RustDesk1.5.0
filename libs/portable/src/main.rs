@@ -41,6 +41,40 @@ fn app_dir_name(exe: &str) -> String {
         .unwrap_or_else(|| APP_PREFIX.to_owned())
 }
 
+/// 目录里是否还有程序在运行。
+///
+/// 用「改名试试」来判断：Windows 上如果目录里有文件正被某个进程使用，
+/// 重命名会失败（ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED）；
+/// 没人占用时重命名一定成功。成功后立刻改回去。
+#[cfg(windows)]
+fn extraction_dir_is_busy(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    // 重试几次：短暂的占用（比如杀毒软件正在扫描）不该被当成
+    // 「安装正在进行」而一直跳过清理。
+    for attempt in 0..3 {
+        let probe = dir.with_extension(format!("busycheck{attempt}"));
+        let _ = std::fs::remove_dir_all(&probe);
+        match std::fs::rename(dir, &probe) {
+            Ok(()) => {
+                // 改名成功 = 没人占用，改回去
+                let _ = std::fs::rename(&probe, dir);
+                return false;
+            }
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    }
+    true
+}
+
+#[cfg(not(windows))]
+fn extraction_dir_is_busy(_dir: &Path) -> bool {
+    false
+}
+
 fn is_timestamp_matches(dir: &Path, ts: &mut u64) -> bool {
     let Ok(app_metadata) = std::str::from_utf8(APP_METADATA) else {
         return true;
@@ -184,7 +218,22 @@ fn setup(
             *_ui = true;
             ui::setup();
         }
-        std::fs::remove_dir_all(&dir).ok();
+        // 清空前先确认没有进程正从这个目录里运行。
+        //
+        // 安装流程是：解压到 dir -> 从 dir 启动 rustdesk.exe --install ->
+        // 它用 XCOPY 把 dir 复制到 Program Files。这中间有几十秒（要复制
+        // 70MB+ 的文件），而安装过程没有任何进度提示，用户以为卡住就会
+        // 再双击一次安装包。那时这里会把 dir 整个删掉，上一次 XCOPY 的
+        // 源就没了 —— 复制到一半的文件消失，XCOPY 带着 /C 仍然返回 0，
+        // 于是「安装成功」，可安装目录缺了 data\ 等子目录，Flutter 起不来，
+        // 只剩后台服务进程。
+        //
+        // 目录里的程序还在跑就跳过清理，等它自己结束。
+        if extraction_dir_is_busy(&dir) {
+            eprintln!("the extraction directory is in use, skipping the cleanup");
+        } else {
+            std::fs::remove_dir_all(&dir).ok();
+        }
     }
     let mut metadata_paths = reader.package_paths.clone();
     metadata_paths.extend(remove_dropped_package_files(&dir, &reader.package_paths));
