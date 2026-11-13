@@ -1,4 +1,4 @@
-# 修复当前这台机器的安装（双击运行，需要管理员权限）
+# 修复当前这台机器的安装（双击运行，会弹 UAC，点「是」即可）
 #
 # 背景：11-13 08:12 那次安装没装完 —— C:\Program Files\RustDesk 里只有 16 个文件，
 # data\ 等子目录缺失，Flutter 找不到 data\app.so，客户端启动即退出（退出码 1），
@@ -7,19 +7,27 @@
 # 这个脚本把缺失的文件从解压目录补拷过去，不需要重新安装、不需要重新下载包。
 
 $ErrorActionPreference = 'Stop'
+$scriptPath = $PSCommandPath
 
 $src = "C:\Users\Windows\AppData\Local\rustdesk"
 $dst = "C:\Program Files\RustDesk"
 
-# 需要管理员权限
+# 需要管理员权限：以管理员身份重新启动自己（UAC 弹窗点「是」即可）。
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($id)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host ""
-    Write-Host "需要管理员权限。请右键这个文件 -> 使用 PowerShell 运行 -> 以管理员身份运行。" -ForegroundColor Yellow
-    Write-Host ""
-    Read-Host "按回车关闭"
-    exit 1
+    Write-Host "需要管理员权限，即将弹出 UAC 提示，请点「是」。" -ForegroundColor Yellow
+    Start-Sleep -Seconds 1
+    try {
+        Start-Process -FilePath "powershell.exe" `
+            -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$scriptPath`"" `
+            -Verb RunAs
+    } catch {
+        Write-Host "提权失败: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "请改为右键本文件 -> 使用 PowerShell 运行 -> 以管理员身份运行。" -ForegroundColor Yellow
+    }
+    exit 0
 }
 
 Write-Host "=== 修复安装 ===" -ForegroundColor Cyan
@@ -52,7 +60,7 @@ Write-Host "  文件数: $files"
 if ($missing) {
     Write-Host "  仍然缺失: $($missing -join ', ')" -ForegroundColor Red
 } else {
-    Write-Host "  关键文件齐全 ✓" -ForegroundColor Green
+    Write-Host "  关键文件齐全 [OK]" -ForegroundColor Green
 }
 
 # 重启客户端
@@ -66,4 +74,6 @@ Start-Process "$dst\RustDesk.exe"
 
 Write-Host ""
 Write-Host "已启动，应该能看到主界面窗口。" -ForegroundColor Green
+Write-Host "（如果还是没有界面，把这个日志文件发给我）" -ForegroundColor Gray
+Write-Host "  $env:APPDATA\RustDesk\log\RustDesk_rCURRENT.log" -ForegroundColor Gray
 Read-Host "按回车关闭"
