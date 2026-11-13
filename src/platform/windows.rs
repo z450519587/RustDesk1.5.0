@@ -1625,6 +1625,29 @@ fn get_after_install(
 }
 
 pub fn install_me(options: &str, path: String, silent: bool, debug: bool) -> ResultType<()> {
+    // 只有一次安装可以跑。
+    //
+    // 用户看到安装迟迟没有反应（要复制 70MB+ 的文件），往往会再点一次
+    // 「安装」，甚至重新双击安装包。后者会让打包器清空解压目录
+    // （setup() 里的 remove_dir_all），而此时上一次的 XCOPY 还在读那个
+    // 目录 —— 复制到一半源文件消失，XCOPY 因为带了 /C 仍然返回 0，
+    // 于是「安装成功」，可安装目录里缺了 data\ 等子目录，
+    // Flutter 起不来，客户端 0.9 秒退出码 1，只剩后台服务进程。
+    //
+    // 这里用进程级互斥挡住第二次安装。
+    static INSTALL_RUNNING: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if INSTALL_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        bail!("Another installation is already running");
+    }
+    struct InstallGuard;
+    impl Drop for InstallGuard {
+        fn drop(&mut self) {
+            INSTALL_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _install_guard = InstallGuard;
+
     // MSI and EXE installations use different registry layouts, so MSI-to-EXE upgrades are not supported.
     let (installed_subkey, _, _, _) = get_install_info();
     if get_windows_installer_state(&installed_subkey)? == Some(true) {
@@ -1812,8 +1835,86 @@ copy /Y \"{tmp_path}\\Uninstall {app_name}.lnk\" \"{path}\\\"
     );
     run_cmds(cmds, debug, "install")?;
     run_after_run_cmds(silent);
+    verify_installed_payload(&path);
     cleanup_portable_extraction_dir();
     Ok(())
+}
+
+/// 装完之后核对安装目录是否完整，缺了就补齐。
+///
+/// ## 为什么需要
+///
+/// 安装脚本用 XCOPY 复制 payload，而 XCOPY 带了 `/C`（出错也继续），
+/// 所以**复制一半失败它仍然返回 0** —— 安装流程认为「成功」，
+/// 可安装目录里可能缺了 `data\`、`drivers\` 等子目录。
+///
+/// 缺 `data\app.so` 是致命的：Flutter 的 runner 找不到 AOT 快照，
+/// 客户端启动 0.9 秒就以退出码 1 结束，界面永远不出现，
+/// 只剩后台服务进程在跑（用户看到的「后台进程有，但是没有界面」）。
+///
+/// 常见触发方式：安装要复制 70MB+ 的文件却没有进度提示，用户以为卡死
+/// 又点了一次安装，打包器随即清空解压目录，上一次 XCOPY 的源就没了。
+///
+/// ## 怎么补
+///
+/// 复制用的源目录（解压目录）这时可能已经被清掉了，所以补齐要用
+/// robocopy 重新拷一遍，并检查关键文件是否到位。
+fn verify_installed_payload(path: &str) {
+    // 关键文件：Flutter 的 AOT 快照、Rust 主库、启动器。
+    let required = ["data\\app.so", "librustdesk.dll", "rustdesk.exe"];
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|rel| !Path::new(path).join(rel).is_file())
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    log::warn!(
+        "installed payload is incomplete, missing: {}",
+        missing.join(", ")
+    );
+
+    // 解压目录（源）还在就补拷；不在就只能报错。
+    let Ok(current_exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(src) = current_exe.parent() else {
+        return;
+    };
+    if !src.join("data\\app.so").is_file() {
+        log::error!(
+            "cannot repair the installation: the extracted payload is gone ({})",
+            src.display()
+        );
+        return;
+    }
+    // 用 robocopy 补齐：它不会因为个别文件失败就整体放弃，
+    // 并且会把子目录一并带上（XCOPY 在源被删时可能静默漏掉目录）。
+    // 这里必须等它跑完 —— 紧接着就要清理解压目录了。
+    let script = format!(
+        "robocopy \"{}\" \"{}\" /E /IS /IT /NFL /NDL /NJH /NJS /NP /R:1 /W:1",
+        src.to_string_lossy(),
+        path
+    );
+    let _ = std::process::Command::new("cmd")
+        .args(["/c", &script])
+        .creation_flags(winapi::um::winbase::CREATE_NO_WINDOW)
+        .status();
+
+    let still_missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|rel| !Path::new(path).join(rel).is_file())
+        .collect();
+    if !still_missing.is_empty() {
+        log::error!(
+            "the installation is incomplete, these files are missing: {}",
+            still_missing.join(", ")
+        );
+    } else {
+        log::info!("the installation was repaired");
+    }
 }
 
 /// 安装完成后清掉便携打包器的**解压目录**。
@@ -4051,10 +4152,27 @@ fn run_after_run_cmds(silent: bool) {
     let (_, _, _, exe) = get_install_info();
     if !silent {
         log::debug!("Spawn new window");
-        allow_err!(std::process::Command::new("cmd")
-            .args(&["/c", "timeout", "/t", "2", "&", &format!("{exe}")])
-            .creation_flags(winapi::um::winbase::CREATE_NO_WINDOW)
-            .spawn());
+        // 延迟几秒再启动主界面，等安装收尾（服务注册、快捷方式写完）。
+        //
+        // 原来这行是 `cmd /c timeout /t 2 & {exe}`：经 cmd 启动有两个问题 ——
+        // 一是安装路径在 "C:\Program Files\..." 下带空格，命令行的引号规则
+        // 交给 cmd 解析，一旦解析出岔子主界面就起不来，而命令是后台跑的，
+        // 没人看得到错误；二是这样启动拿不到退出码，失败完全无声。
+        //
+        // 直接 spawn 不经过 cmd，路径由 Rust 自己处理，带空格也没问题，
+        // 失败还能记进日志。
+        let main_exe = exe.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if !std::path::Path::new(&main_exe).is_file() {
+                log::error!("the installed program is missing: {main_exe}");
+                return;
+            }
+            match std::process::Command::new(&main_exe).spawn() {
+                Ok(_) => log::info!("started the main window: {main_exe}"),
+                Err(e) => log::error!("failed to start the main window: {e}"),
+            }
+        });
     }
     if Config::get_option("stop-service") != "Y" {
         allow_err!(std::process::Command::new(&exe).arg("--tray").spawn());
